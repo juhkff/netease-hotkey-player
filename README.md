@@ -4,6 +4,8 @@
 
 示例：按 `Ctrl+Alt+1` → 立刻播《起风了》，从第 15 秒开始。
 
+> **不想自己编译？** 直接下 [Releases](https://github.com/juhkff/netease-hotkey-player/releases/latest) 里的 `netease-hotkey-player-vX.Y.Z.zip`，解压后双击 `install.cmd` 就行。
+
 ```
 ┌─ 网易云一键播放 · 热键设置 ──────────────────────────────┐
 │ [添加] [编辑] [删除] [试一下] [启动网易云] [打开目录]      │
