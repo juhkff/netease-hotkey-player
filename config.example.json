@@ -1,0 +1,10 @@
+{
+  "port": 9229,
+  "hotkeys": [
+    { "hotkey": "Ctrl+Alt+1", "songId": "1330348068", "seconds": 15, "note": "起风了 / 冯沁苑(买辣椒也用券)" },
+    { "hotkey": "Ctrl+Alt+2", "songId": "35447132", "seconds": 90, "note": "勋章 / 鹿晗" }
+  ],
+  "restoreHotkey": "Ctrl+Alt+0",
+  "clipMode": true,
+  "notify": false
+}

@@ -1,0 +1,16 @@
+# 运行时产物
+logs/
+node_modules/
+*.log
+
+# 用户自己的热键配置（仓库里放 config.example.json 就行）
+config.json
+
+# 逆向 / 调试过程中落盘的客户端打包文件（十几 MB 的网易云自己的代码，不往仓库里放）
+out/
+
+# Windows / 编辑器
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
