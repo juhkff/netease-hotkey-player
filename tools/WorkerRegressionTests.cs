@@ -69,8 +69,14 @@ class WorkerRegressionTests
     [STAThread]
     static int Main(string[] args)
     {
+        System.Text.Encoding originalInput = null;
         try
         {
+            if (args.Length > 3 && args[3] == "--utf8-console")
+            {
+                originalInput = Console.InputEncoding;
+                Console.InputEncoding = new System.Text.UTF8Encoding(true);
+            }
             var search = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
                 "{\"ok\":true,\"list\":[{\"id\":\"3362244118\",\"name\":\"雨爱 (DJ版)\",\"artists\":\"DYYL.\",\"duration\":225}," +
                 "{\"id\":\"316100\",\"name\":\"雨爱\",\"artists\":\"杨丞琳\",\"duration\":260}]}");
@@ -239,5 +245,6 @@ class WorkerRegressionTests
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+        finally { if (originalInput != null) Console.InputEncoding = originalInput; }
     }
 }

@@ -12,3 +12,5 @@ $exe = Join-Path $out 'WorkerRegressionTests.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Regression test compilation failed.' }
 & $exe $NodeExe (Join-Path $root 'tools\fixtures\worker-echo.mjs') (Join-Path $root 'worker.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Worker lifecycle regression failed.' }
+& $exe $NodeExe (Join-Path $root 'tools\fixtures\worker-echo.mjs') (Join-Path $root 'worker.mjs') --utf8-console
+if ($LASTEXITCODE -ne 0) { throw 'UTF-8 console regression failed.' }
