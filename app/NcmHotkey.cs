@@ -20,8 +20,8 @@ using System.Windows.Forms;
 using System.Xml;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.0.5.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.5.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.6.0")]
 
 namespace NcmHotkey
 {
@@ -151,7 +151,9 @@ namespace NcmHotkey
         public bool clipMode { get; set; }
         /// <summary>是否弹托盘气泡通知。默认关（保持静默），结果只显示在状态栏和日志里。</summary>
         public bool notify { get; set; }
-        public AppConfig() { port = 9229; hotkeys = new List<HotkeyBinding>(); restoreHotkey = ""; clipMode = true; notify = false; }
+        public bool gameEventsEnabled { get; set; }
+        public List<GameEventRule> gameEvents { get; set; }
+        public AppConfig() { port = 9229; hotkeys = new List<HotkeyBinding>(); restoreHotkey = ""; clipMode = true; notify = false; gameEvents = new List<GameEventRule>(); }
     }
 
     // ==================== 全局热键 ====================
@@ -458,6 +460,7 @@ namespace NcmHotkey
         int nextId = 1;
         readonly Dictionary<int, Action<Dictionary<string, object>>> pending =
             new Dictionary<int, Action<Dictionary<string, object>>>();
+        readonly Dictionary<int, System.Threading.Timer> requestTimers = new Dictionary<int, System.Threading.Timer>();
         public event Action<string> LogLine;
 
         static bool IsRunning(Process process)
@@ -533,6 +536,8 @@ namespace NcmHotkey
                 Action<Dictionary<string, object>> cb;
                 if (!pending.TryGetValue(id, out cb)) return null;
                 pending.Remove(id);
+                System.Threading.Timer timer;
+                if (requestTimers.TryGetValue(id, out timer)) { requestTimers.Remove(id); timer.Dispose(); }
                 return cb;
             }
         }
@@ -544,6 +549,8 @@ namespace NcmHotkey
                 List<Action<Dictionary<string, object>>> callbacks =
                     new List<Action<Dictionary<string, object>>>(pending.Values);
                 pending.Clear();
+                foreach (System.Threading.Timer timer in requestTimers.Values) timer.Dispose();
+                requestTimers.Clear();
                 return callbacks;
             }
         }
@@ -563,6 +570,9 @@ namespace NcmHotkey
         }
 
         public void Send(Dictionary<string, object> cmd, Action<Dictionary<string, object>> callback)
+        { Send(cmd, callback, 0); }
+
+        public void Send(Dictionary<string, object> cmd, Action<Dictionary<string, object>> callback, int timeoutMs)
         {
             string error = null;
             Action<Dictionary<string, object>> failed = null;
@@ -574,7 +584,18 @@ namespace NcmHotkey
                     int id = nextId++;
                     Dictionary<string, object> request = new Dictionary<string, object>(cmd);
                     request["id"] = id;
-                    lock (pending) { if (callback != null) pending[id] = callback; }
+                    if (timeoutMs > 0) request["deadlineMs"] = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds + timeoutMs;
+                    lock (pending) {
+                        if (callback != null) {
+                            pending[id] = callback;
+                            if (timeoutMs > 0) {
+                                Process child = proc;
+                                System.Threading.Timer timer = new System.Threading.Timer(delegate { ExpireRequest(child, id); }, null,
+                                    System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+                                requestTimers[id] = timer; timer.Change(timeoutMs, System.Threading.Timeout.Infinite);
+                            }
+                        }
+                    }
                     try
                     {
                         // Framework's redirected StandardInput writer uses the
@@ -593,6 +614,13 @@ namespace NcmHotkey
                 }
             }
             if (failed != null) Reply(failed, error, null);
+        }
+
+        void ExpireRequest(Process child, int id)
+        {
+            Action<Dictionary<string, object>> callback = null;
+            lock (processLock) { if (proc == child) callback = TakeCallback(id); }
+            if (callback != null) Reply(callback, "请求等待超时，中断点保留在播放服务中，可重试", null);
         }
 
         static void Reply(Action<Dictionary<string, object>> cb, string error, Dictionary<string, object> extra)
@@ -644,12 +672,13 @@ namespace NcmHotkey
 
         public HotkeyBinding Result { get; private set; }
 
-        public BindingDialog(HotkeyBinding src, PlayWorker worker, int port)
+        public BindingDialog(HotkeyBinding src, PlayWorker worker, int port) : this(src, worker, port, false) { }
+        public BindingDialog(HotkeyBinding src, PlayWorker worker, int port, bool songOnly)
         {
             this.worker = worker;
             this.port = port;
 
-            Text = src == null ? "添加一条热键" : "编辑热键";
+            Text = songOnly ? "选择事件播放的歌曲" : src == null ? "添加一条热键" : "编辑热键";
             Font = new Font("Microsoft YaHei UI", 9F);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false;
@@ -739,7 +768,7 @@ namespace NcmHotkey
             {
                 uint mods, vk; string err;
                 string hk = hotkeyBox.Text.Trim();
-                if (!HotkeyApi.Parse(hk, out mods, out vk, out err))
+                if (!songOnly && !HotkeyApi.Parse(hk, out mods, out vk, out err))
                 {
                     MessageBox.Show(this, err, "按键不对", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     hotkeyBox.Focus();
@@ -778,6 +807,11 @@ namespace NcmHotkey
             });
             AcceptButton = ok;
             CancelButton = cancel;
+            if (songOnly) {
+                Controls.Remove(l1); Controls.Remove(hotkeyBox); Controls.Remove(l1b);
+                foreach (Control control in Controls) control.Top -= 38;
+                ClientSize = new Size(640, 448);
+            }
 
             if (src != null)
             {
@@ -920,6 +954,10 @@ namespace NcmHotkey
         NotifyIcon tray = new NotifyIcon();
         ToolStripMenuItem pauseItem = new ToolStripMenuItem();
         Timer pingTimer = new Timer();
+        GameEventService gameEvents;
+        string gameEventStatus = "游戏事件：未启用";
+        GameEventsDialog gameEventsDialog;
+        bool editingGameEvents;
 
         bool paused = false;
         bool exiting = false;
@@ -931,6 +969,8 @@ namespace NcmHotkey
         string nodeExe = "node";
         string cloudMusicPath = null;
         int busyCount = 0;
+        bool restorePending;
+        bool playPending;
         bool startHidden = false;
         bool allowShow = false;
         bool inited = false;
@@ -953,8 +993,8 @@ namespace NcmHotkey
             Text = "网易云一键播放 · 热键设置";
             Font = new Font("Microsoft YaHei UI", 9F);
             try { appIcon = HotkeyApi.MakeAppIcon(32); Icon = appIcon; } catch { }
-            ClientSize = new Size(700, 470);
-            MinimumSize = new Size(560, 380);
+            ClientSize = new Size(700, 510);
+            MinimumSize = new Size(700, 380);
             StartPosition = FormStartPosition.CenterScreen;
 
             BuildUi();
@@ -988,6 +1028,19 @@ namespace NcmHotkey
             pingTimer.Tick += delegate { Ping(); };
             pingTimer.Start();
             Ping();
+            gameEvents = new GameEventService();
+            gameEvents.StatusChanged += delegate(string text, long version) {
+                Ui(delegate { if (!exiting && gameEvents != null && gameEvents.IsCurrent(version)) SetGameEventStatus(text); });
+                Log("[游戏事件] " + text);
+            };
+            gameEvents.PlayRequested += delegate(GameEventRule rule, long version) {
+                Ui(delegate {
+                    if (exiting || editingGameEvents || paused || gameEvents == null || !gameEvents.IsCurrent(version)) return;
+                    Log("[游戏事件] 触发 " + rule.eventId + " / " + GameEventCatalog.Slots(rule.playerSlots) + " / " + rule.songId);
+                    PlaySong(rule.Song(), -1);
+                });
+            };
+            ConfigureGameEvents();
         }
 
         void BuildUi()
@@ -1020,6 +1073,8 @@ namespace NcmHotkey
             });
 
             toolbar.Controls.AddRange(new Control[] { addBtn, editBtn, delBtn, testBtn, launchBtn, folderBtn });
+            Button eventsButton = MakeButton("游戏事件…", 6, delegate { EditGameEvents(); });
+            toolbar.Controls.Add(eventsButton);
 
             Label hint = new Label();
             hint.Text = "程序会缩到右下角托盘里继续生效。双击列表里的一行可以修改。";
@@ -1088,7 +1143,7 @@ namespace NcmHotkey
             clipCheck.Checked = on;
             restoreBox.Enabled = on;
             restoreCaptureBtn.Enabled = on;
-            restoreTestBtn.Enabled = on;
+            restoreTestBtn.Enabled = on && !restorePending;
             restoreBox.Text = on ? config.restoreHotkey : "";
         }
 
@@ -1114,10 +1169,11 @@ namespace NcmHotkey
             ContextMenuStrip menu = new ContextMenuStrip();
             menu.Font = Font;
             menu.Items.Add("打开设置", null, delegate { ShowMain(); });
+            menu.Items.Add("游戏事件…", null, delegate { ShowMain(); EditGameEvents(); });
             restoreItem.Text = "复位到中断位置";
             restoreItem.Click += delegate { DoRestore(); };
             menu.Items.Add(restoreItem);
-            pauseItem.Text = "暂停全部热键";
+            pauseItem.Text = "暂停全部触发";
             pauseItem.CheckOnClick = false;
             pauseItem.Click += delegate { TogglePause(); };
             menu.Items.Add(pauseItem);
@@ -1149,8 +1205,9 @@ namespace NcmHotkey
         void TogglePause()
         {
             paused = !paused;
-            pauseItem.Text = paused ? "恢复全部热键" : "暂停全部热键";
+            pauseItem.Text = paused ? "恢复全部触发" : "暂停全部触发";
             if (paused) UnregisterAll(); else RegisterAll();
+            ConfigureGameEvents();
             RefreshList();
             SetStatus(paused ? "热键已暂停" : "热键已生效");
         }
@@ -1165,7 +1222,7 @@ namespace NcmHotkey
         {
             // Keep the hook callback short. Music work runs only after the original
             // keystroke has been passed on. Editing bindings must not play music.
-            if (capturingRestore || Form.ActiveForm is BindingDialog || IsDisposed) return;
+            if (capturingRestore || editingGameEvents || Form.ActiveForm is BindingDialog || IsDisposed) return;
             try
             {
                 BeginInvoke((MethodInvoker)delegate
@@ -1215,25 +1272,30 @@ namespace NcmHotkey
         // ---------- 复位 ----------
         void DoRestore()
         {
-            if (!config.clipMode) return;
+            if (!config.clipMode || restorePending) return;
+            if (gameEvents != null) gameEvents.CancelPending();
+            restorePending = true; UpdateClipUi(); restoreItem.Enabled = false;
             busyCount++;
+            Log("开始复位请求");
             SetStatus("正在复位…");
             worker.Send(new Dictionary<string, object> { { "cmd", "restore" }, { "port", config.port } },
                 delegate(Dictionary<string, object> r)
                 {
-                    busyCount--;
                     Ui(delegate
                     {
+                        busyCount = Math.Max(0, busyCount - 1); restorePending = false; UpdateClipUi(); restoreItem.Enabled = config.clipMode;
                         bool ok = r.ContainsKey("ok") && r["ok"] is bool && (bool)r["ok"];
                         if (!ok)
                         {
                             string e = Str(r, "error");
+                            Log("复位失败：" + e);
                             SetStatus("复位失败：" + e);
                             Notify("复位失败", e);
                             return;
                         }
                         if (r.ContainsKey("nothing") && r["nothing"] is bool && (bool)r["nothing"])
                         {
+                            Log("复位结束：没有中断点");
                             SetStatus("还没有中断点：先按一个片段键，再按复位键。");
                             Notify("没有中断点", "先按一个片段键，再按复位键。");
                             return;
@@ -1243,10 +1305,11 @@ namespace NcmHotkey
                         string msg = "已复位：" + name + " · 从 " + HotkeyApi.Humanize(sec) + " 继续";
                         if (!(r.ContainsKey("wasPlaying") && r["wasPlaying"] is bool && (bool)r["wasPlaying"]))
                             msg += "（保持暂停）";
+                        Log(msg);
                         SetStatus(msg);
                         Notify("已复位", msg);
                     });
-                });
+                }, 30000);
         }
 
         // ---------- 配置读写 ----------
@@ -1262,6 +1325,7 @@ namespace NcmHotkey
                     {
                         config = c;
                         if (config.hotkeys == null) config.hotkeys = new List<HotkeyBinding>();
+                        if (config.gameEvents == null) config.gameEvents = new List<GameEventRule>();
                         if (config.port <= 0) config.port = 9229;
                     }
                 }
@@ -1286,6 +1350,35 @@ namespace NcmHotkey
                 SetStatus("配置保存失败：" + ex.Message);
                 Log("配置保存失败：" + ex.Message);
             }
+        }
+
+        void ConfigureGameEvents()
+        {
+            // Keep read-only monitoring alive while the dialog is open. The
+            // PlayRequested handler suppresses playback until editing finishes.
+            bool enabled = config.gameEventsEnabled && !paused;
+            SetGameEventStatus(!enabled ? paused ? "游戏事件：已暂停" : "游戏事件：未启用" : "游戏事件：正在连接…");
+            if (gameEvents != null) gameEvents.Configure(enabled, config.gameEvents);
+        }
+        void SetGameEventStatus(string text)
+        {
+            gameEventStatus = text;
+            if (gameEventsDialog != null && !gameEventsDialog.IsDisposed) gameEventsDialog.UpdateMonitoringStatus(text);
+        }
+        void EditGameEvents()
+        {
+            if (editingGameEvents) return;
+            editingGameEvents = true;
+            try {
+                using (GameEventsDialog dialog = new GameEventsDialog(config.gameEventsEnabled, config.gameEvents, config.hotkeys, worker, config.port)) {
+                    gameEventsDialog = dialog;
+                    dialog.UpdateMonitoringStatus(gameEventStatus);
+                    ConfigureGameEvents();
+                    if (dialog.ShowDialog(this) == DialogResult.OK) {
+                        config.gameEventsEnabled = dialog.MonitoringEnabled; config.gameEvents = dialog.Result; SaveConfig();
+                    }
+                }
+            } finally { gameEventsDialog = null; editingGameEvents = false; ConfigureGameEvents(); }
         }
 
         // ---------- 热键注册 ----------
@@ -1547,6 +1640,7 @@ namespace NcmHotkey
 
         void Ping()
         {
+            if (busyCount > 0) return;
             if (!worker.Running)
             {
                 StartWorker();
@@ -1557,6 +1651,7 @@ namespace NcmHotkey
                 {
                     Ui(delegate
                     {
+                        if (busyCount > 0) return;
                         bool ok = r.ContainsKey("ok") && r["ok"] is bool && (bool)r["ok"];
                         if (!ok)
                         {
@@ -1576,7 +1671,7 @@ namespace NcmHotkey
                         }
                         else restoreHint = "";
                         SetStatus(msg);
-                        restoreItem.Enabled = config.clipMode;
+                        restoreItem.Enabled = config.clipMode && !restorePending;
                         restoreItem.Text = sus ? "复位到中断位置（" + Str(r, "savedName") + "）" : "复位到中断位置";
                         if (!titlesFilled) { titlesFilled = true; FillTitles(); }
                     });
@@ -1650,8 +1745,15 @@ namespace NcmHotkey
         void Play(int index)
         {
             if (index < 0 || index >= config.hotkeys.Count) return;
-            HotkeyBinding b = config.hotkeys[index];
+            PlaySong(config.hotkeys[index], index);
+        }
+        void PlaySong(HotkeyBinding b, int index)
+        {
+            if (restorePending) { Log("复位期间忽略重复播放请求：" + b.songId); return; }
+            if (playPending) { Log("已有播放请求处理中，忽略重复触发：" + b.songId); return; }
+            if (!worker.Running) { StartWorker(); if (!worker.Running) return; }
 
+            playPending = true;
             busyCount++;
             SetRowStatus(index, "正在播放…");
             SetStatus("正在播放「" + (b.note.Length > 0 ? b.note : b.songId) + "」…");
@@ -1664,13 +1766,15 @@ namespace NcmHotkey
 
             worker.Send(cmd, delegate(Dictionary<string, object> r)
             {
-                busyCount--;
                 Ui(delegate
                 {
+                    playPending = false;
+                    busyCount = Math.Max(0, busyCount - 1);
                     bool ok = r.ContainsKey("ok") && r["ok"] is bool && (bool)r["ok"];
                     if (ok)
                     {
                         string name = Str(r, "name");
+                        Log("播放成功：songId=" + b.songId + " / " + name);
                         double err = Num(r, "error");
                         double heard = Num(r, "heard");
                         string heardTip = heard > 0.25
@@ -1685,13 +1789,14 @@ namespace NcmHotkey
                     else
                     {
                         string err = Str(r, "error");
+                        Log("播放失败：songId=" + b.songId + " / " + err);
                         SetRowStatus(index, "✘ 失败");
                         SetStatus("失败：" + err);
                         Notify("播放失败", err);
                     }
                     RefreshList();
                 });
-            });
+            }, 30000);
         }
 
         void FillNote(HotkeyBinding b)
@@ -1781,6 +1886,7 @@ namespace NcmHotkey
 
         void SetStatus(string text)
         {
+            if (restorePending && text != "正在复位…") return;
             statusLabel.Text = text;
         }
 
@@ -1810,7 +1916,7 @@ namespace NcmHotkey
                 string dir = Path.Combine(appDir, "logs");
                 Directory.CreateDirectory(dir);
                 File.AppendAllText(Path.Combine(dir, "app.log"),
-                    DateTime.Now.ToString("s") + "  " + line + Environment.NewLine, Encoding.UTF8);
+                    DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fff") + "  " + line + Environment.NewLine, Encoding.UTF8);
             }
             catch { }
         }
@@ -1831,6 +1937,8 @@ namespace NcmHotkey
                 return;
             }
             UnregisterAll();
+            if (gameEvents != null) { gameEvents.Dispose(); gameEvents = null; }
+            pingTimer.Stop(); pingTimer.Dispose();
             worker.Dispose();
             tray.Visible = false;
             base.OnFormClosing(e);

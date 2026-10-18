@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = 'v1.0.5',
+    [string]$Version = 'v1.0.6',
     [string]$Src = '',
     [string]$RuntimeDir = ''
 )
@@ -38,7 +38,8 @@ if (Test-Path $icoFile) { $iconArg = @("/win32icon:$icoFile") }
 
 & $csc /nologo /target:winexe /codepage:65001 /optimize+ @iconArg `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll `
-    /out:"$stage\NcmHotkey.exe" (Join-Path $Src 'app\NcmHotkey.cs')
+    /platform:x64 /out:"$stage\NcmHotkey.exe" (Join-Path $Src 'app\NcmHotkey.cs') `
+    (Join-Path $Src 'app\GameEvents.cs') (Join-Path $Src 'app\GgstEvents.cs') (Join-Path $Src 'app\GameEventForms.cs')
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $stage 'NcmHotkey.exe'))) { throw '编译失败，没有产出 exe' }
 
 Copy-Item (Join-Path $Src 'worker.mjs')          $stage -Force

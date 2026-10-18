@@ -8,7 +8,8 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $exe = Join-Path $out 'WorkerRegressionTests.exe'
 & $csc /nologo /target:exe /codepage:65001 /main:WorkerRegressionTests /out:$exe `
     /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll `
-    (Join-Path $root 'app\NcmHotkey.cs') (Join-Path $root 'tools\WorkerRegressionTests.cs')
+    (Join-Path $root 'app\NcmHotkey.cs') (Join-Path $root 'app\GameEvents.cs') `
+    (Join-Path $root 'app\GgstEvents.cs') (Join-Path $root 'app\GameEventForms.cs') (Join-Path $root 'tools\WorkerRegressionTests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Regression test compilation failed.' }
 & $exe $NodeExe (Join-Path $root 'tools\fixtures\worker-echo.mjs') (Join-Path $root 'worker.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Worker lifecycle regression failed.' }

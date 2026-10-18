@@ -7,6 +7,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   const reply = () => process.stdout.write(JSON.stringify({ id: message.id, ok: true, echo: message.cmd }) + '\n');
   if (message.cmd === 'exit') return process.exit(23);
   if (message.cmd === 'hang') return;
+  if (message.cmd === 'late') { setTimeout(reply, 200); return; }
   if (message.cmd === 'malformed') {
     process.stdout.write('not json\n{"id":"invalid","ok":true}\n');
   }

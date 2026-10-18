@@ -2,9 +2,25 @@
 
 [![Windows build](https://github.com/juhkff/netease-hotkey-player/actions/workflows/windows-release.yml/badge.svg)](https://github.com/juhkff/netease-hotkey-player/actions/workflows/windows-release.yml)
 
-[下载 Windows x64 免安装包](https://github.com/juhkff/netease-hotkey-player/releases/latest) · [版本说明](docs/releases/v1.0.5.md)
+[下载 Windows x64 免安装包](https://github.com/juhkff/netease-hotkey-player/releases/latest) · [版本说明](docs/releases/v1.0.6.md)
 
 一个挂在后台的 Windows 托盘小程序：**按一个组合键（任意界面都生效），网易云立刻开始播放你指定的那首歌，并且从你指定的秒数开始。**
+
+**v1.0.6 实验功能：监听游戏事件**。主窗口或托盘菜单的“游戏事件…”可以添加“游戏 → 事件 → 歌曲”规则，逐条启停，设置歌曲起点和触发延迟。当前仅有一个内置游戏适配：**《罪恶装备·奋战》凯发动龙装**；其他游戏和事件需增加对应适配，不能仅靠填写名称监听。
+
+规则中的 **1P、2P 是两个独立勾选框**，可以只选一方或同时选择。这里指开局角色槽位，角色换到画面另一边后不变；尚未自动识别联网时自己操控的一方。双边选择同一规则时，在该规则的延迟窗口内收到双方事件会合并成一次播放请求。不同的启用规则不能覆盖同一个游戏事件与角色，以免争抢歌曲。
+
+使用时进入“游戏事件…”→“添加规则”→选择事件、勾选监听角色→“选择歌曲…”搜索歌曲→设置起点和延迟→保存，并勾选“启用游戏事件监听”。首次升级默认关闭，不改动已有热键。热键和游戏事件共用同一个播放服务与中断点；启用点歌机模式后，原复位键也能恢复事件播放前的音乐。托盘“暂停全部触发”同时暂停热键与事件；关闭设置主窗口仍在托盘运行。
+
+实时游戏状态放在“游戏事件…”页面的规则表下方，可查看连接状态及 1P、2P 当前动作。打开此页面期间仍按已保存的规则刷新状态，同时暂停事件自动切歌；保存或取消后恢复自动触发。
+
+GGST 当前只读支持本机已验证 EXE（Steam build 24797162）；版本校验失败会停止识别。**训练场已实测触发切歌与播放复位，联网行为仍待验证**，未自动处理败北停歌、原游戏 BGM 音量或淡入。原游戏声音 Mod 没有自动卸载，同时保留会叠加。默认延迟 0.4 秒是发出播放请求前的等待，客户端切歌和缓冲另有耗时。此功能不依赖独立的 `GgstMusicProbe.exe`。
+
+连接与搜索修复：搜索会确认“单曲”标签实际选中，并在异步结果重建标签时重新检查；播放命令失败会记录完整错误并丢弃缓存连接，下一次命令重新连接客户端，避免重开客户端或页面超时后一直沿用失效连接。这些改动不能证明已覆盖所有间歇性故障，实际错误见 `logs/app.log`。
+
+复位修复：不再假设“上一首”一定能回到中断的歌曲。先做有限回退，原曲不在队列或回退失败时通过客户端原生列表重新加载，再在暂停状态下恢复位置、队列和原播放状态。复位执行上限 20 秒，界面等待上限 30 秒（包括排队）；超时保留当前播放服务内的中断点供重试。复位期间不重复排队，也暂不接受新的音乐触发，但原键盘输入仍正常透传。中断点仍属于当前播放服务，重启应用后不保留。
+
+切歌优化：正常播放不再预先等待额外的权限查询，暂停和跳转改为确认客户端状态后立即继续；恢复播放后仍检查进度是否真实前进。搜索页标题与列表不一致时优先换一个有效关键词，避免反复等待旧列表。播放请求同样有 20 秒执行上限和 30 秒界面等待上限；复位可中断尚未完成的播放请求，并保留原中断点。`logs/app.log` 记录毫秒时间和各播放步骤耗时，便于区分规则延迟、搜索加载、定位起点和播放验证；网络缓冲仍会影响实际切歌速度。
 
 **v1.0.2 按键透传**：播放键和复位键只监听、不拦截，游戏和输入框仍能收到原来的按键。长按只触发一次音乐操作，松开后再按才能再次触发；编辑热键时暂不触发音乐。单键和组合键均支持，例如 `P` 播放、`O` 复位，同时保留 P、O 原本的功能。
 
@@ -24,7 +40,7 @@
 
 ```
 ┌─ 网易云一键播放 · 热键设置 ──────────────────────────────┐
-│ [添加] [编辑] [删除] [试一下] [启动网易云] [打开目录]      │
+│ [添加] [编辑] [删除] [试一下] [启动网易云] [打开目录] [游戏事件…] │
 │                                                          │
 │ 按键        歌曲                      开始位置   状态     │
 │ Ctrl+Alt+1  起风了 / 冯沁苑(买辣椒也用券)  0:15    待命     │
@@ -156,7 +172,7 @@
 
 - 界面上你看不到中断点？看状态栏，连上客户端后会显示 `中断点：起风了(林俊杰) @ 1:46`。
 - 还没按过片段键就按复位键，会提示「还没有中断点」。
-- 复位会先按 «上一首» 往回退（最多 5 步），所以**别在插播期间把原来的歌从队列里删掉**。
+- 复位先尝试有限次数的 «上一首»；无法回到原曲时，改用原生歌曲列表重新加载，再恢复位置和队列。
 - 不想要这套行为，把「点歌机模式」的勾去掉即可，片段键就退化成单纯的「切歌并跳转」。
 
 ---
@@ -237,7 +253,10 @@ logs\app.log         运行日志
 ### 仓库里
 
 ```
-app/NcmHotkey.cs     WinForms 界面程序（托盘、全局热键、配置、对话框）
+app/NcmHotkey.cs     WinForms 主程序（托盘、全局热键、配置、共用播放服务）
+app/GameEvents.cs    游戏事件规则、延迟调度和后台监听服务
+app/GgstEvents.cs    GGST 只读事件源（当前支持凯发动龙装）
+app/GameEventForms.cs 游戏事件与歌曲规则设置界面
 app/app.ico          程序图标（tools/make-ico.py 生成）
 worker.mjs           常驻播放服务：stdin/stdout 走 JSON 行协议
 lib/ncm.mjs          ★ 核心：CDP 连接 + 搜索 + 切歌 + 跳转 + 读状态 + 中断点/复位
@@ -260,14 +279,15 @@ powershell -ExecutionPolicy Bypass -File tools\pack-release.ps1
 
 首次打包会从 Node.js 官方下载固定版本的 Windows x64 运行时，校验官方 SHA-256，只提取 `node.exe` 和许可证到项目的 `out/runtime`。这一步需要网络；不会安装 Node、修改 PATH 或注册系统服务。
 
-当前输出为 `dist/netease-hotkey-player-v1.0.5-win-x64.zip`。完整解压后可直接运行；`runtime/LICENSE` 包含运行时第三方许可。构建目录信息见 `dist/build-result.json`。
+当前输出为 `dist/netease-hotkey-player-v1.0.6-win-x64.zip`。完整解压后可直接运行；`runtime/LICENSE` 包含运行时第三方许可。构建目录信息见 `dist/build-result.json`。
 
 验证按键解析、搜索显示、进程启动失败与恢复、通信及运行时查找：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\test-worker-lifecycle.ps1
+powershell -ExecutionPolicy Bypass -File tools\test-game-events.ps1
 # 无需启动客户端的切歌流程测试
-& .\out\runtime\node.exe --test tools\playback-performance.test.mjs
+& .\out\runtime\node.exe --test tools\playback-performance.test.mjs tools\worker-recovery.test.mjs
 PowerShell -ExecutionPolicy Bypass -File tools\verify-package.ps1
 ```
 
@@ -294,7 +314,7 @@ powershell -ExecutionPolicy Bypass -File tools\build-app.ps1
 它会：
 
 1. 关掉正在运行的主程序
-2. 用 `csc.exe /target:winexe` 编译 `app\NcmHotkey.cs` → `NcmHotkey.exe`
+2. 用系统 `csc.exe` 编译主程序和三个游戏事件源文件为 x64 `NcmHotkey.exe`（`tools\pack-release.ps1` 已包含完整参数；不包含独立实验窗口）
 3. 拷 `worker.mjs` 和 `lib\ncm.mjs` 到 `%LOCALAPPDATA%\ncm-hotkey\`
 4. 把 node 的位置写进 `node.txt`
 5. 重建桌面快捷方式和开机启动项（`config.json` 已存在就保留，不会覆盖你的配置）

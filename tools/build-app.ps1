@@ -36,7 +36,7 @@ if (Test-Path $icoPath) { $icoArg = @("/win32icon:$icoPath") } else { Write-Host
     /reference:System.Windows.Forms.dll `
     /reference:System.Web.Extensions.dll `
     $icoArg `
-    "$src\app\NcmHotkey.cs"
+    /platform:x64 "$src\app\NcmHotkey.cs" "$src\app\GameEvents.cs" "$src\app\GgstEvents.cs" "$src\app\GameEventForms.cs"
 
 if ($LASTEXITCODE -ne 0) { throw "编译失败，csc 退出码 $LASTEXITCODE" }
 Write-Host ("编译成功：" + $exe + "  " + (Get-Item $exe).Length + " 字节")

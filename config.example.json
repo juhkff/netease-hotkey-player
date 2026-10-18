@@ -6,5 +6,7 @@
   ],
   "restoreHotkey": "Ctrl+Alt+0",
   "clipMode": true,
-  "notify": false
+  "notify": false,
+  "gameEventsEnabled": false,
+  "gameEvents": []
 }

@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing version tag to build and publish, for example v1.0.5'
+        description: 'Existing version tag to build and publish, for example v1.0.6'
         required: true
         type: string
 
@@ -60,8 +60,11 @@ jobs:
 
       - name: Test playback control flow
         run: |
-          & ./out/runtime/node.exe --test tools/playback-performance.test.mjs
+          & ./out/runtime/node.exe --test tools/playback-performance.test.mjs tools/worker-recovery.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Playback tests failed.' }
+
+      - name: Test game events without a running game
+        run: ./tools/test-game-events.ps1
 
       - name: Build portable package
         env:

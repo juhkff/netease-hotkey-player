@@ -193,6 +193,17 @@ class WorkerRegressionTests
                 Check(Ok(Send(worker, "reply-and-exit")), "Final stdout response must precede exit error");
                 worker.Start(node, script, workDir);
 
+                int expiredCallbacks = 0;
+                using (ManualResetEvent timedOut = new ManualResetEvent(false))
+                {
+                    worker.Send(new Dictionary<string, object> { { "cmd", "late" } }, delegate(Dictionary<string, object> reply)
+                    { Check(!Ok(reply), "Timeout must report failure"); Interlocked.Increment(ref expiredCallbacks); timedOut.Set(); }, 50);
+                    Check(timedOut.WaitOne(3000), "Deadline must complete a hung request");
+                    Thread.Sleep(250);
+                    Check(Ok(Send(worker, "barrier")), "Worker must stay usable after a deadline");
+                    Check(expiredCallbacks == 1, "Late reply must not finish callback twice");
+                }
+
                 int completions = 0;
                 using (ManualResetEvent disposed = new ManualResetEvent(false))
                 {
