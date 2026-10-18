@@ -1,5 +1,6 @@
 param([string]$Version = '24.19.0')
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid Node.js version.' }
 $root = Split-Path -Parent $PSScriptRoot
 $cache = Join-Path $root 'out\runtime-cache'

@@ -150,6 +150,7 @@ class WorkerRegressionTests
             string node = args[0], script = args[1], workDir = Path.GetDirectoryName(script);
             using (PlayWorker worker = new PlayWorker())
             {
+                worker.LogLine += delegate(string line) { Console.Error.WriteLine("worker stderr: " + line); };
                 Check(!worker.Running, "New worker must not run");
                 // Reproduce the exact original crash without launching anything.
                 typeof(PlayWorker).GetField("proc", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(worker, new Process());
@@ -161,7 +162,9 @@ class WorkerRegressionTests
                 Check(failed && !worker.Running, "Failed Start must not publish a Process");
                 Check(!Ok(Send(worker, "ping")), "Send after failed Start must not throw");
                 worker.Start(node, script, workDir);
-                Check(worker.Running && Ok(Send(worker, "ping")), "A worker must recover after failed Start");
+                Check(worker.Running, "Worker process exited immediately after recovery Start");
+                Dictionary<string, object> recovery = Send(worker, "ping");
+                Check(Ok(recovery), "A worker must recover after failed Start: " + new JavaScriptSerializer().Serialize(recovery));
                 string unicode = "雨爱 DJ版 杨丞琳 🎵";
                 Dictionary<string, object> unicodeReply = Send(worker, unicode);
                 Check(Ok(unicodeReply) && (string)unicodeReply["echo"] == unicode,
