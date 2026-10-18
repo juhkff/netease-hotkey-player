@@ -1,10 +1,26 @@
 # 网易云一键播放 · 热键设置
 
+[![Windows build](https://github.com/juhkff/netease-hotkey-player/actions/workflows/windows-release.yml/badge.svg)](https://github.com/juhkff/netease-hotkey-player/actions/workflows/windows-release.yml)
+
+[下载 Windows x64 免安装包](https://github.com/juhkff/netease-hotkey-player/releases/latest) · [版本说明](docs/releases/v1.0.5.md)
+
 一个挂在后台的 Windows 托盘小程序：**按一个组合键（任意界面都生效），网易云立刻开始播放你指定的那首歌，并且从你指定的秒数开始。**
+
+**v1.0.2 按键透传**：播放键和复位键只监听、不拦截，游戏和输入框仍能收到原来的按键。长按只触发一次音乐操作，松开后再按才能再次触发；编辑热键时暂不触发音乐。单键和组合键均支持，例如 `P` 播放、`O` 复位，同时保留 P、O 原本的功能。
+
+**v1.0.3 符号键修复**：修复捕获出的 `Oemplus`、`OemMinus`、`Oemtilde`、小键盘和媒体键等名称无法解析的问题。按键框录制出的名称现在可以直接保存；单独按 Ctrl、Shift、Alt 时会继续等待主键。
+
+**v1.0.4 搜索修复**：修复中文关键词传给播放服务时的编码不一致，以及网易云已返回歌曲、添加窗口却显示“没搜到”的问题；兼容播放服务返回的实际集合类型，连续搜索时只显示最后一次请求的结果。
+
+**v1.0.5 切歌提速**：目标歌曲已在客户端列表中显示时直接双击对应歌曲行，省去重复搜索；歌曲信息缓存十分钟，减少重复请求；缩短搜索和播放状态的轮询间隔。目标不在页面中时仍保留完整搜索流程。网络取流和客户端缓冲仍有耗时。
+
+**客户端兼容性**：支持普通 Windows 安装版及 Microsoft Store 版，均需带本地调试端口启动。普通版直接启动 `cloudmusic.exe`，商店版使用 Windows 应用激活接口；自定义安装路径可从正在运行的客户端识别并缓存。当前修复在本机商店版 3.1.23 上验证，其他版本仍取决于其调试端口和页面结构是否兼容，不能保证每个新版客户端均适用。
 
 示例：按 `Ctrl+Alt+1` → 立刻播《起风了》，从第 15 秒开始。
 
-> **不想自己编译？** 直接下 [Releases](https://github.com/juhkff/netease-hotkey-player/releases/latest) 里的 `netease-hotkey-player-vX.Y.Z.zip`，解压后双击 `install.cmd` 就行。
+> **v1.0.1 修复版支持免安装运行**：Windows x64 程序包自带 `runtime/node.exe`，完整解压后直接双击 `NcmHotkey.exe`，不需要在系统里安装 Node.js，也不需要配置 PATH。内部仍使用随包运行时执行播放服务。旧的 v1.0.0 包没有自带运行时；请确认使用的是新版构建。
+>
+> 需要桌面快捷方式和开机自启时，可选运行 `install.cmd`；它会把随包运行时一起复制到应用自己的目录。发布版本见 [Releases](https://github.com/juhkff/netease-hotkey-player/releases)。
 
 ```
 ┌─ 网易云一键播放 · 热键设置 ──────────────────────────────┐
@@ -28,7 +44,7 @@
 - 🔕 **完全静默**：不弹通知、不弹对话框，只留一个托盘图标
 - 💎 **VIP 歌曲正常播**：走的是网易云客户端自己，不是第三方取流
 
-**怎么做到的**（一句话）：用 `--remote-debugging-port` 让网易云开出调试端口，通过 CDP 在它的页面里驱动界面 —— 搜索、双击播放、改播放位置，再用 Windows `RegisterHotKey` 做全局热键。
+**怎么做到的**（一句话）：用 `--remote-debugging-port` 让网易云开出调试端口，通过 CDP 在它的页面里驱动界面 —— 搜索、双击播放、改播放位置；Windows 键盘监听器识别音乐按键后立即传递原始按键，音乐操作异步执行。
 
 > ⚠️ 前提：网易云客户端必须用**带调试端口的方式**启动（装好后桌面上会多一个专用快捷方式）。
 > 详见 [六、出问题了怎么办](#六出问题了怎么办)。
@@ -39,6 +55,7 @@
 
 ### 1. 打开设置界面
 
+- 免安装模式：在完整解压的新版目录里双击 `NcmHotkey.exe`，保留旁边的 `runtime`、`lib` 和 `worker.mjs`。
 - 双击桌面上的 **网易云热键**（或开始菜单里找），也可以从右下角托盘图标双击打开。
 - 窗口长这样：
 
@@ -67,7 +84,9 @@
 
 ### 3. 按键
 
-切到任意窗口，按 `Ctrl+Alt+1`，等 3~5 秒 —— 开始播《起风了》，从 15 秒处开始。
+免安装模式首次启动时，先点“添加”设置自己的歌曲和按键。`config.example.json` 仅供参考，不会自动替换已有配置。
+
+例如设置 `Ctrl+Alt+1` 播放《起风了》第 15 秒后，切到其他窗口按该组合键即可播放。首次搜索及客户端加载可能需要等待，同一首歌再次触发通常更快。
 
 > 第一次按会慢一点（要重新加载歌曲），同一首歌连按会快很多。
 
@@ -86,6 +105,8 @@
 | **备注** | 会自动填上「歌名 / 歌手」，可以自己改，只影响列表和托盘提示的显示 |
 
 点「确定」保存，**立刻生效，不用重启**。
+
+符号键会显示 Windows 的按键名，例如主键盘的 `=/+` 键显示为 `Oemplus`，减号键为 `OemMinus`。小键盘的加号是另一个键，显示为 `Add`；小键盘数字支持 `Num0`～`Num9` 和 `NumPad0`～`NumPad9`。需要 Shift 的组合请一起录制，例如 `Shift+Oemplus`。手动填写时，`+`、`Ctrl++` 也可分别表示 `Oemplus`、`Ctrl+Oemplus`，不会自动添加 Shift。
 
 ### 为什么要带歌手 / 专辑名
 
@@ -160,6 +181,13 @@
 
 程序日志在安装目录的 `logs\app.log`。
 
+**启动时报「没有与此对象关联的进程」？**
+
+- 这是旧版在播放服务启动失败后访问未启动 `Process.HasExited` 的错误，不需要开启 JIT 调试。
+- v1.0.1 修复了启动失败清理、进程状态检查、通信失败及退出后待处理回调的收尾。
+- 新版优先使用随包的 `runtime/node.exe`；缺少运行时会在状态栏和日志中显示原因。不要只复制 EXE，须保留完整目录。
+- 支持 Microsoft Store 版网易云：通过 Windows 应用激活接口传入调试参数，避免直接执行 `WindowsApps` 内的程序时出现“拒绝访问”。工具可识别已注册的商店版安装，也可从正在运行的客户端识别路径并缓存到 `cloudmusic.txt`。首次连接前需从托盘彻底退出网易云，再点击工具里的「启动网易云」。
+
 **按了没反应？**
 - 看状态栏是不是「已连上网易云（端口 9229）」。不是的话，说明网易云不是用专用快捷方式开的 —— 退干净重开。
 - 看列表里的「状态」列：显示「注册失败(1409)」表示这个组合键被别的软件占了，换一个。
@@ -223,10 +251,43 @@ research/            ★ 当初是怎么试出来的（见 research/README.md）
 
 ## 九、自己编译
 
-不需要装 Visual Studio、也不需要下载任何依赖 —— 用 Windows 自带的 .NET Framework 编译器：
+不需要装 Visual Studio，使用 Windows 自带的 .NET Framework 编译器。构建免安装包：
 
 ```powershell
 # 在仓库根目录
+powershell -ExecutionPolicy Bypass -File tools\pack-release.ps1
+```
+
+首次打包会从 Node.js 官方下载固定版本的 Windows x64 运行时，校验官方 SHA-256，只提取 `node.exe` 和许可证到项目的 `out/runtime`。这一步需要网络；不会安装 Node、修改 PATH 或注册系统服务。
+
+当前输出为 `dist/netease-hotkey-player-v1.0.5-win-x64.zip`。完整解压后可直接运行；`runtime/LICENSE` 包含运行时第三方许可。构建目录信息见 `dist/build-result.json`。
+
+验证按键解析、搜索显示、进程启动失败与恢复、通信及运行时查找：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\test-worker-lifecycle.ps1
+# 无需启动客户端的切歌流程测试
+& .\out\runtime\node.exe --test tools\playback-performance.test.mjs
+PowerShell -ExecutionPolicy Bypass -File tools\verify-package.ps1
+```
+
+### GitHub Actions 自动发布
+
+推送到 `main` 或提交 PR 会自动在 Windows 上获取并校验独立运行时、运行测试、构建并检查免安装包。测试不要求安装网易云，也不会播放音乐。
+
+发布时先更新 `app/NcmHotkey.cs` 中的程序集版本（例如 `1.0.6.0`）、打包脚本的默认版本和相应文档，再推送同版本标签：
+
+```powershell
+git push origin main
+git tag -a v1.0.6 -m "Release v1.0.6"
+git push origin v1.0.6
+```
+
+标签版本必须与程序集版本一致。Actions 会通过全部检查后，自动上传 ZIP 与 SHA-256 文件并发布 Release；匹配的 `docs/releases/<标签>.md` 作为版本说明，没有该文件时生成默认说明。也可在 Actions 页手动运行 **Windows build and release**，输入已有标签重跑。发布使用仓库内置的 `GITHUB_TOKEN`，无需另配个人令牌。
+
+原有的部署脚本仍可使用：
+
+```powershell
 powershell -ExecutionPolicy Bypass -File tools\build-app.ps1
 ```
 
@@ -238,7 +299,7 @@ powershell -ExecutionPolicy Bypass -File tools\build-app.ps1
 4. 把 node 的位置写进 `node.txt`
 5. 重建桌面快捷方式和开机启动项（`config.json` 已存在就保留，不会覆盖你的配置）
 
-> 唯一的软性要求是**系统里得有 Node.js**（主程序用它驱动网易云）。
+> 旧的开发部署脚本仍会查找已有 Node。分发给普通用户请使用上面的 `pack-release.ps1` 免安装包，不要求用户安装 Node。
 > 源码在 WSL / 网络路径上时，用 `-Src` 指过去：
 > ```powershell
 > .\tools\build-app.ps1 -Src '\\wsl.localhost\Ubuntu-26.04\home\ubuntu\projects\netease-hotkey-player'

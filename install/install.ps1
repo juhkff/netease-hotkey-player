@@ -16,8 +16,12 @@ Write-Host ''
 
 # ---------- 1. 找 Node.js ----------
 $nodeExe = $null
-$cmd = Get-Command node -ErrorAction SilentlyContinue
-if ($cmd) { $nodeExe = $cmd.Source }
+$bundledNode = Join-Path $here 'runtime\node.exe'
+if (Test-Path -LiteralPath $bundledNode) { $nodeExe = $bundledNode }
+if (-not $nodeExe) {
+    $cmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($cmd) { $nodeExe = $cmd.Source }
+}
 if (-not $nodeExe) {
     foreach ($g in @(
         (Join-Path $env:LOCALAPPDATA 'Author Software\nvm\.nodejs\node.exe'),
@@ -27,15 +31,15 @@ if (-not $nodeExe) {
     }
 }
 if (-not $nodeExe) {
-    Write-Host '× 没找到 Node.js。' -ForegroundColor Red
-    Write-Host '  这个程序靠 Node.js 驱动网易云客户端，请先装一个：https://nodejs.org/'
-    Write-Host '  装完再运行一次本安装程序即可。'
+    Write-Host '× 没找到随包运行时。' -ForegroundColor Red
+    Write-Host '  请完整解压新版免安装包，保留 runtime\node.exe；无需安装系统级 Node.js。'
     exit 1
 }
 Write-Host "√ Node.js: $nodeExe" -ForegroundColor Green
 
 # ---------- 2. 关掉正在运行的旧版本 ----------
 Get-Process NcmHotkey -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $exe } |
     ForEach-Object { Write-Host "  关闭旧版本 pid=$($_.Id)"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Milliseconds 800
 
@@ -43,6 +47,15 @@ Start-Sleep -Milliseconds 800
 New-Item -ItemType Directory -Force -Path $app | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $app 'lib') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $app 'logs') | Out-Null
+if (Test-Path -LiteralPath $bundledNode) {
+    $null = New-Item -ItemType Directory -Path (Join-Path $app 'runtime') -Force
+    Copy-Item -LiteralPath $bundledNode -Destination (Join-Path $app 'runtime\node.exe') -Force
+    Copy-Item -LiteralPath (Join-Path $here 'runtime\LICENSE') -Destination (Join-Path $app 'runtime\LICENSE') -Force
+    if (Test-Path -LiteralPath (Join-Path $here 'runtime\version.txt')) {
+        Copy-Item -LiteralPath (Join-Path $here 'runtime\version.txt') -Destination (Join-Path $app 'runtime\version.txt') -Force
+    }
+    $nodeExe = Join-Path $app 'runtime\node.exe'
+}
 
 Copy-Item (Join-Path $here 'NcmHotkey.exe')  $app -Force
 Copy-Item (Join-Path $here 'worker.mjs')     $app -Force
@@ -89,10 +102,10 @@ $shell   = New-Object -ComObject WScript.Shell
 $desktop = [Environment]::GetFolderPath('Desktop')
 $startup = [Environment]::GetFolderPath('Startup')
 
-# 清掉旧的同名快捷方式
+# Only replace shortcuts created by this tool; preserve other NetEase shortcuts.
 Get-ChildItem $desktop, $startup -Filter '*.lnk' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -like '*网易云*' } |
-    ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+    Where-Object { $_.Name -in @('网易云音乐(带热键).lnk', '网易云热键.lnk') } |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 
 if ($cloud) {
     $lnk = $shell.CreateShortcut((Join-Path $desktop '网易云音乐(带热键).lnk'))
@@ -117,7 +130,7 @@ $startLnk.Save()
 Write-Host '√ 开机自启项：网易云热键.lnk（只留托盘图标，不弹窗口）' -ForegroundColor Green
 
 # ---------- 5. 启动 ----------
-Start-Process $exe -ArgumentList '--tray'
+Start-Process $exe -ArgumentList '--tray' -WindowStyle Hidden
 Start-Sleep -Seconds 3
 Write-Host '√ 程序已在后台运行（看右下角托盘里的蓝色播放图标）' -ForegroundColor Green
 

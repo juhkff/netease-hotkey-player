@@ -1,0 +1,109 @@
+name: Windows build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to build and publish, for example v1.0.5'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.event_name }}-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Resolve and validate version
+        id: version
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+        run: |
+          $source = Get-Content app/NcmHotkey.cs -Raw
+          $match = [regex]::Match($source, 'AssemblyVersion\("(\d+\.\d+\.\d+)\.0"\)')
+          if (-not $match.Success) { throw 'Assembly version not found.' }
+          $version = 'v' + $match.Groups[1].Value
+          $tag = if ($env:REQUESTED_TAG) { $env:REQUESTED_TAG } elseif ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
+          if ($tag) {
+            if ($tag -notmatch '^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid version tag.' }
+            if (($tag -split '-')[0] -ne $version) { throw 'Tag and assembly version do not match.' }
+            $version = $tag
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Fetch and verify private runtime
+        run: ./tools/fetch-runtime.ps1
+
+      - name: Test keyboard, search display and worker lifecycle
+        run: ./tools/test-worker-lifecycle.ps1
+
+      - name: Test playback control flow
+        run: |
+          & ./out/runtime/node.exe --test tools/playback-performance.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Playback tests failed.' }
+
+      - name: Build portable package
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: ./tools/pack-release.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Verify package contents and checksums
+        run: ./tools/verify-package.ps1
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-portable
+          path: |
+            dist/netease-hotkey-player-*.zip
+            dist/SHA256SUMS-*.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    needs: build
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.version }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-portable
+          path: release-assets
+
+      - name: Publish GitHub release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: ./tools/publish-release.ps1 -Version $env:RELEASE_VERSION -Repository $env:GITHUB_REPOSITORY

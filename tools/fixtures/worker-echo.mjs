@@ -1,0 +1,14 @@
+import { createInterface } from 'node:readline';
+
+createInterface({ input: process.stdin }).on('line', line => {
+  const message = JSON.parse(line);
+  const reply = () => process.stdout.write(JSON.stringify({ id: message.id, ok: true, echo: message.cmd }) + '\n');
+  if (message.cmd === 'exit') return process.exit(23);
+  if (message.cmd === 'hang') return;
+  if (message.cmd === 'malformed') {
+    process.stdout.write('not json\n{"id":"invalid","ok":true}\n');
+  }
+  reply();
+  if (message.cmd === 'duplicate') reply();
+  if (message.cmd === 'reply-and-exit') process.stdout.write('', () => process.exit(0));
+});

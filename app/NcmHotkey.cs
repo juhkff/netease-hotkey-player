@@ -17,10 +17,115 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using System.Xml;
 using Microsoft.Win32;
+
+[assembly: System.Reflection.AssemblyVersion("1.0.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.5.0")]
 
 namespace NcmHotkey
 {
+    // Store applications must be activated with their application identity;
+    // directly executing a WindowsApps binary can fail with access denied.
+    public static class CloudMusicStore
+    {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern int PackageFamilyNameFromFullName(string fullName, ref uint length, StringBuilder familyName);
+
+        [ComImport, Guid("2e941141-7f97-4756-ba1d-9decde894a3d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IApplicationActivationManager
+        {
+            void ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appId,
+                [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
+        }
+
+        public static string GetAppIdForExecutable(string executable)
+        {
+            if (string.IsNullOrEmpty(executable)) return null;
+            try
+            {
+                DirectoryInfo root = new FileInfo(executable).Directory;
+                while (root != null)
+                {
+                    string manifest = Path.Combine(root.FullName, "AppxManifest.xml");
+                    if (File.Exists(manifest))
+                    {
+                        XmlDocument document = new XmlDocument();
+                        document.XmlResolver = null;
+                        document.Load(manifest);
+                        XmlNamespaceManager ns = new XmlNamespaceManager(document.NameTable);
+                        ns.AddNamespace("p", "http://schemas.microsoft.com/appx/manifest/foundation/windows10");
+                        foreach (XmlNode app in document.SelectNodes("/p:Package/p:Applications/p:Application", ns))
+                        {
+                            XmlAttribute target = app.Attributes["Executable"], id = app.Attributes["Id"];
+                            if (target == null || id == null) continue;
+                            if (!string.Equals(Path.GetFullPath(Path.Combine(root.FullName, target.Value)),
+                                Path.GetFullPath(executable), StringComparison.OrdinalIgnoreCase)) continue;
+                            uint size = 0;
+                            if (PackageFamilyNameFromFullName(root.Name, ref size, null) != 122) return null;
+                            StringBuilder family = new StringBuilder((int)size);
+                            if (PackageFamilyNameFromFullName(root.Name, ref size, family) == 0)
+                                return family.ToString() + "!" + id.Value;
+                        }
+                        return null;
+                    }
+                    root = root.Parent;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        public static string FindInstalledAppId()
+        {
+            try
+            {
+                using (RegistryKey packages = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"))
+                {
+                    if (packages == null) return null;
+                    foreach (string name in packages.GetSubKeyNames())
+                    {
+                        using (RegistryKey package = packages.OpenSubKey(name))
+                        {
+                            if (package == null) continue;
+                            string displayName = Convert.ToString(package.GetValue("DisplayName"));
+                            if (displayName.IndexOf("网易云", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                displayName.IndexOf("CloudMusic", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                            string root = Convert.ToString(package.GetValue("PackageRootFolder"));
+                            if (root.Length == 0) continue;
+                            XmlDocument document = new XmlDocument();
+                            document.XmlResolver = null;
+                            document.Load(Path.Combine(root, "AppxManifest.xml"));
+                            foreach (XmlNode app in document.GetElementsByTagName("Application"))
+                            {
+                                XmlAttribute executable = app.Attributes["Executable"];
+                                if (executable == null || !string.Equals(Path.GetFileName(executable.Value),
+                                    "cloudmusic.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                                string id = GetAppIdForExecutable(Path.Combine(root, executable.Value));
+                                if (id != null) return id;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        public static uint Activate(string appId, string arguments)
+        {
+            object manager = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")));
+            try
+            {
+                uint processId;
+                ((IApplicationActivationManager)manager).ActivateApplication(appId, arguments, 2, out processId);
+                return processId;
+            }
+            finally { Marshal.ReleaseComObject(manager); }
+        }
+    }
+
     // ==================== 配置 ====================
     public class HotkeyBinding
     {
@@ -53,11 +158,6 @@ namespace NcmHotkey
     public static class HotkeyApi
     {
         public const uint MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4, MOD_WIN = 8;
-
-        [DllImport("user32.dll", SetLastError = true)]
-        public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-        [DllImport("user32.dll", SetLastError = true)]
-        public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool DestroyIcon(IntPtr hIcon);
@@ -123,31 +223,56 @@ namespace NcmHotkey
             {";",0xBA},{"'",0xDE},{",",0xBC},{".",0xBE},{"/",0xBF}
         };
 
-        /// <summary>把 "Ctrl+Alt+1" 这样的字符串解析成 RegisterHotKey 需要的修饰键和虚拟键码。</summary>
+        /// <summary>把 "Ctrl+Alt+1" 这样的字符串解析成修饰键和虚拟键码。</summary>
         public static bool Parse(string text, out uint mods, out uint vk, out string error)
         {
             mods = 0; vk = 0; error = null;
             if (string.IsNullOrWhiteSpace(text)) { error = "还没有设置按键"; return false; }
-            foreach (string raw in text.Split('+'))
+            // '+' is also the chord separator. A final literal plus means the
+            // main keyboard's =/+ key; numpad '+' remains the distinct Add key.
+            string chord = text.Trim();
+            if (chord == "+") chord = "Oemplus";
+            else if (chord.EndsWith("++", StringComparison.Ordinal))
+                chord = chord.Substring(0, chord.Length - 1) + "Oemplus";
+            foreach (string raw in chord.Split('+'))
             {
                 string p = raw.Trim();
-                if (p.Length == 0) continue;
+                if (p.Length == 0) { error = "按键格式不完整；加号键请用 Oemplus 或 Ctrl++"; return false; }
                 if (Mods.ContainsKey(p)) { mods |= Mods[p]; continue; }
-
-                int fn;
-                if ((p[0] == 'F' || p[0] == 'f') && p.Length >= 2 &&
-                    int.TryParse(p.Substring(1), out fn) && fn >= 1 && fn <= 24)
-                { vk = (uint)(0x70 + fn - 1); continue; }
-
-                if (p.Length == 1 && p[0] >= '0' && p[0] <= '9') { vk = (uint)(0x30 + (p[0] - '0')); continue; }
-                if (p.Length == 1 && char.IsLetter(p[0])) { vk = (uint)char.ToUpperInvariant(p[0]); continue; }
-                if (Named.ContainsKey(p)) { vk = Named[p]; continue; }
-
-                error = "看不懂的按键：" + p;
-                return false;
+                uint candidate;
+                if (!TryMainKey(p, out candidate)) { error = "看不懂的按键：" + p; return false; }
+                if (vk != 0) { error = "一个热键只能包含一个主键"; return false; }
+                vk = candidate;
             }
             if (vk == 0) { error = "按键里缺少主键，比如 Ctrl+Alt+1 里的那个 1"; return false; }
             return true;
+        }
+
+        static bool TryMainKey(string text, out uint key)
+        {
+            key = 0;
+            if (Named.TryGetValue(text, out key)) return true;
+            if (text.Length == 1 && ((text[0] >= '0' && text[0] <= '9') ||
+                (text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z')))
+            { key = (uint)char.ToUpperInvariant(text[0]); return true; }
+            // Preserve the Num0..Num9 names produced by older recorder versions.
+            if (text.Length == 4 && text.StartsWith("Num", StringComparison.OrdinalIgnoreCase) &&
+                text[3] >= '0' && text[3] <= '9')
+            { key = (uint)(0x60 + text[3] - '0'); return true; }
+            Keys parsed;
+            if (char.IsLetter(text[0]) && text.IndexOf(',') < 0 &&
+                Enum.TryParse<Keys>(text, true, out parsed) && Enum.IsDefined(typeof(Keys), parsed) &&
+                (uint)parsed >= 8 && (uint)parsed <= 0xFE && !IsModifierKey(parsed))
+            { key = (uint)parsed; return true; }
+            return false;
+        }
+
+        public static bool IsModifierKey(Keys key)
+        {
+            return key == Keys.ControlKey || key == Keys.ShiftKey || key == Keys.Menu ||
+                key == Keys.LControlKey || key == Keys.RControlKey ||
+                key == Keys.LShiftKey || key == Keys.RShiftKey ||
+                key == Keys.LMenu || key == Keys.RMenu || key == Keys.LWin || key == Keys.RWin;
         }
 
         /// <summary>把按下的组合键格式化成 "Ctrl+Alt+1"。</summary>
@@ -177,20 +302,176 @@ namespace NcmHotkey
         }
     }
 
+    // Matches only the first key-down of each physical press. It never suppresses input.
+    public sealed class HotkeyMatcher
+    {
+        class Binding { public int Id; public uint Modifiers, Key; }
+        readonly List<Binding> bindings = new List<Binding>();
+        readonly HashSet<uint> down = new HashSet<uint>();
+
+        public bool Add(int id, uint modifiers, uint key)
+        {
+            foreach (Binding b in bindings)
+                if (b.Id == id || (b.Modifiers == modifiers && b.Key == key)) return false;
+            bindings.Add(new Binding { Id = id, Modifiers = modifiers, Key = key });
+            return true;
+        }
+
+        public int? Observe(uint key, bool isDown, uint modifiers)
+        {
+            if (!isDown) { down.Remove(key); return null; }
+            if (!down.Add(key)) return null;
+            foreach (Binding b in bindings)
+                if (b.Key == key && b.Modifiers == modifiers) return b.Id;
+            return null;
+        }
+
+        public void Clear() { bindings.Clear(); down.Clear(); }
+    }
+
+    public sealed class PassiveHotkeys : IDisposable
+    {
+        delegate IntPtr KeyboardProc(int code, IntPtr message, IntPtr data);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr SetWindowsHookEx(int id, KeyboardProc callback, IntPtr module, uint threadId);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool UnhookWindowsHookEx(IntPtr hook);
+        [DllImport("user32.dll")]
+        static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int key);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr GetModuleHandle(string moduleName);
+
+        readonly HotkeyMatcher matcher = new HotkeyMatcher();
+        readonly KeyboardProc callback;
+        IntPtr hook;
+        public event Action<int> Pressed;
+        public PassiveHotkeys() { callback = OnKeyboard; }
+        public bool Add(int id, uint modifiers, uint key) { return matcher.Add(id, modifiers, key); }
+
+        public void Start()
+        {
+            if (hook != IntPtr.Zero) return;
+            hook = SetWindowsHookEx(13, callback, GetModuleHandle(null), 0); // WH_KEYBOARD_LL
+            if (hook == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        static bool IsDown(int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; }
+        static uint Modifiers()
+        {
+            uint mods = 0;
+            if (IsDown(0x12)) mods |= HotkeyApi.MOD_ALT;
+            if (IsDown(0x11)) mods |= HotkeyApi.MOD_CONTROL;
+            if (IsDown(0x10)) mods |= HotkeyApi.MOD_SHIFT;
+            if (IsDown(0x5B) || IsDown(0x5C)) mods |= HotkeyApi.MOD_WIN;
+            return mods;
+        }
+
+        IntPtr OnKeyboard(int code, IntPtr message, IntPtr data)
+        {
+            try
+            {
+                if (code >= 0 && (Marshal.ReadInt32(data, 8) & 0x10) == 0) // Ignore injected events.
+                {
+                    int kind = message.ToInt32();
+                    if (kind == 0x100 || kind == 0x104 || kind == 0x101 || kind == 0x105)
+                    {
+                        int? id = matcher.Observe((uint)Marshal.ReadInt32(data),
+                            kind == 0x100 || kind == 0x104, Modifiers());
+                        if (id.HasValue && Pressed != null) Pressed(id.Value);
+                    }
+                }
+            }
+            catch { } // A listener failure must never interfere with the original keystroke.
+            return CallNextHookEx(hook, code, message, data);
+        }
+
+        public void Dispose()
+        {
+            if (hook != IntPtr.Zero) { UnhookWindowsHookEx(hook); hook = IntPtr.Zero; }
+            matcher.Clear();
+        }
+    }
+
+    // ==================== 私有运行时 ====================
+    public static class RuntimePaths
+    {
+        static string Existing(string path, string baseDir)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            try
+            {
+                path = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
+                if (!Path.IsPathRooted(path)) path = Path.Combine(baseDir, path);
+                path = Path.GetFullPath(path);
+                return File.Exists(path) ? path : null;
+            }
+            catch (ArgumentException) { return null; }
+            catch (NotSupportedException) { return null; }
+            catch (IOException) { return null; }
+        }
+
+        public static string FindNode(string appDir)
+        {
+            // 新版发行包自带运行时，不依赖全局安装或 Explorer 的 PATH。
+            foreach (string relative in new string[] { @"runtime\node.exe", "node.exe" })
+            {
+                string bundled = Existing(relative, appDir);
+                if (bundled != null) return bundled;
+            }
+            try
+            {
+                string hint = Path.Combine(appDir, "node.txt");
+                if (File.Exists(hint))
+                {
+                    string configured = Existing(File.ReadAllText(hint), appDir);
+                    if (configured != null) return configured;
+                }
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            string path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            foreach (string entry in path.Split(Path.PathSeparator))
+            {
+                if (string.IsNullOrWhiteSpace(entry)) continue;
+                string found = Existing(Path.Combine(entry.Trim().Trim('"'), "node.exe"), appDir);
+                if (found != null) return found;
+            }
+            foreach (string root in new string[] {
+                Environment.GetEnvironmentVariable("ProgramFiles"),
+                Environment.GetEnvironmentVariable("ProgramFiles(x86)") })
+            {
+                if (string.IsNullOrEmpty(root)) continue;
+                string found = Existing(Path.Combine(root, @"nodejs\node.exe"), appDir);
+                if (found != null) return found;
+            }
+            return null;
+        }
+    }
+
     // ==================== Node 工作进程 ====================
     public class PlayWorker : IDisposable
     {
         Process proc;
+        readonly object processLock = new object();
         int nextId = 1;
         readonly Dictionary<int, Action<Dictionary<string, object>>> pending =
             new Dictionary<int, Action<Dictionary<string, object>>>();
-        readonly JavaScriptSerializer json = new JavaScriptSerializer();
         public event Action<string> LogLine;
 
-        public bool Running { get { return proc != null && !proc.HasExited; } }
+        static bool IsRunning(Process process)
+        {
+            if (process == null) return false;
+            try { return !process.HasExited; }
+            catch (InvalidOperationException) { return false; }
+        }
+
+        public bool Running { get { lock (processLock) { return IsRunning(proc); } } }
 
         public void Start(string nodeExe, string scriptPath, string workDir)
         {
+            Dispose();
             ProcessStartInfo psi = new ProcessStartInfo(nodeExe, "\"" + scriptPath + "\"");
             psi.WorkingDirectory = workDir;
             psi.UseShellExecute = false;
@@ -201,55 +482,117 @@ namespace NcmHotkey
             psi.StandardOutputEncoding = Encoding.UTF8;
             psi.StandardErrorEncoding = Encoding.UTF8;
 
-            proc = new Process();
-            proc.StartInfo = psi;
-            proc.OutputDataReceived += delegate(object s, DataReceivedEventArgs e) { if (e.Data != null) OnStdout(e.Data); };
-            proc.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e)
+            Process child = new Process();
+            child.StartInfo = psi;
+            child.OutputDataReceived += delegate(object s, DataReceivedEventArgs e)
+            { if (e.Data != null) OnStdout(child, e.Data); else OnWorkerEnded(child); };
+            child.ErrorDataReceived += delegate(object s, DataReceivedEventArgs e)
             { if (e.Data != null && LogLine != null) LogLine(e.Data); };
-            proc.Start();
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
+            try
+            {
+                lock (processLock)
+                {
+                    // Only publish a Process after Start succeeds. A failed Start
+                    // leaves an unassociated Process whose HasExited throws.
+                    if (!child.Start()) throw new InvalidOperationException("播放服务未能启动");
+                    proc = child;
+                    child.BeginOutputReadLine();
+                    child.BeginErrorReadLine();
+                }
+            }
+            catch
+            {
+                lock (processLock) { if (proc == child) proc = null; }
+                Release(child);
+                throw;
+            }
         }
 
-        void OnStdout(string line)
+        void OnStdout(Process child, string line)
         {
             Dictionary<string, object> msg;
-            try { msg = json.Deserialize<Dictionary<string, object>>(line); }
+            try { msg = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(line); }
             catch { return; }
             if (msg == null || !msg.ContainsKey("id") || msg["id"] == null) return;
 
-            int id = Convert.ToInt32(msg["id"]);
+            int id;
+            if (!int.TryParse(Convert.ToString(msg["id"], CultureInfo.InvariantCulture), out id)) return;
             Action<Dictionary<string, object>> cb = null;
-            lock (pending)
+            lock (processLock)
             {
-                if (pending.ContainsKey(id)) { cb = pending[id]; pending.Remove(id); }
+                if (proc != child) return;
+                cb = TakeCallback(id);
             }
             if (cb != null) cb(msg);
         }
 
-        public void Send(Dictionary<string, object> cmd, Action<Dictionary<string, object>> callback)
+        Action<Dictionary<string, object>> TakeCallback(int id)
         {
-            if (!Running)
-            {
-                if (callback != null) Reply(callback, "播放服务没有在运行", null);
-                return;
-            }
-            int id;
             lock (pending)
             {
-                id = nextId++;
-                cmd["id"] = id;
-                if (callback != null) pending[id] = callback;
+                Action<Dictionary<string, object>> cb;
+                if (!pending.TryGetValue(id, out cb)) return null;
+                pending.Remove(id);
+                return cb;
             }
-            try
+        }
+
+        List<Action<Dictionary<string, object>>> TakeAllCallbacks()
+        {
+            lock (pending)
             {
-                proc.StandardInput.WriteLine(json.Serialize(cmd));
-                proc.StandardInput.Flush();
+                List<Action<Dictionary<string, object>>> callbacks =
+                    new List<Action<Dictionary<string, object>>>(pending.Values);
+                pending.Clear();
+                return callbacks;
             }
-            catch (Exception ex)
+        }
+
+        void OnWorkerEnded(Process child)
+        {
+            List<Action<Dictionary<string, object>>> callbacks;
+            lock (processLock)
             {
-                if (callback != null) Reply(callback, ex.Message, null);
+                if (proc != child) return;
+                proc = null;
+                callbacks = TakeAllCallbacks();
             }
+            Release(child);
+            foreach (Action<Dictionary<string, object>> cb in callbacks)
+                Reply(cb, "播放服务已退出，请重试（详细信息见 logs\\app.log）", null);
+        }
+
+        public void Send(Dictionary<string, object> cmd, Action<Dictionary<string, object>> callback)
+        {
+            string error = null;
+            Action<Dictionary<string, object>> failed = null;
+            lock (processLock)
+            {
+                if (!IsRunning(proc)) { error = "播放服务没有在运行"; failed = callback; }
+                else
+                {
+                    int id = nextId++;
+                    Dictionary<string, object> request = new Dictionary<string, object>(cmd);
+                    request["id"] = id;
+                    lock (pending) { if (callback != null) pending[id] = callback; }
+                    try
+                    {
+                        // Framework's redirected StandardInput writer uses the
+                        // local console encoding. Node reads UTF-8, so Chinese
+                        // search terms must be sent as explicit UTF-8 bytes.
+                        byte[] line = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(request) + "\n");
+                        Stream input = proc.StandardInput.BaseStream;
+                        input.Write(line, 0, line.Length);
+                        input.Flush();
+                    }
+                    catch (Exception ex)
+                    {
+                        failed = TakeCallback(id);
+                        error = "播放服务通信失败：" + ex.Message;
+                    }
+                }
+            }
+            if (failed != null) Reply(failed, error, null);
         }
 
         static void Reply(Action<Dictionary<string, object>> cb, string error, Dictionary<string, object> extra)
@@ -261,11 +604,26 @@ namespace NcmHotkey
             cb(m);
         }
 
+        static void Release(Process process)
+        {
+            if (process == null) return;
+            try { if (IsRunning(process)) process.Kill(); } catch { }
+            try { process.Dispose(); } catch { }
+        }
+
         public void Dispose()
         {
-            try { if (proc != null && !proc.HasExited) proc.Kill(); } catch { }
-            try { if (proc != null) proc.Dispose(); } catch { }
-            proc = null;
+            Process old;
+            List<Action<Dictionary<string, object>>> callbacks;
+            lock (processLock)
+            {
+                old = proc;
+                proc = null;
+                callbacks = TakeAllCallbacks();
+            }
+            Release(old);
+            foreach (Action<Dictionary<string, object>> cb in callbacks)
+                Reply(cb, "播放服务已停止", null);
         }
     }
 
@@ -280,6 +638,7 @@ namespace NcmHotkey
         NumericUpDown secBox = new NumericUpDown();
         TextBox noteBox = new TextBox();
         bool capturing = false;
+        int searchVersion;
         readonly PlayWorker worker;
         readonly int port;
 
@@ -452,8 +811,7 @@ namespace NcmHotkey
             if (capturing)
             {
                 Keys code = keyData & Keys.KeyCode;
-                if (code == Keys.ControlKey || code == Keys.ShiftKey || code == Keys.Menu ||
-                    code == Keys.LWin || code == Keys.RWin)
+                if (HotkeyApi.IsModifierKey(code))
                     return true; // 只按了修饰键，继续等主键
 
                 hotkeyBox.Text = HotkeyApi.Format(keyData);
@@ -475,6 +833,7 @@ namespace NcmHotkey
 
             SetSelectedInfo("搜索中…", Color.Gray);
             results.Items.Clear();
+            int version = ++searchVersion;
 
             Dictionary<string, object> cmd = new Dictionary<string, object>();
             cmd["cmd"] = "search";
@@ -490,46 +849,60 @@ namespace NcmHotkey
                 {
                     BeginInvoke((MethodInvoker)delegate
                     {
-                        if (IsDisposed) return;
-                        bool ok = r.ContainsKey("ok") && r["ok"] is bool && (bool)r["ok"];
-                        if (!ok) { SetSelectedInfo("搜索失败：" + MainForm.Str(r, "error"), Color.Firebrick); return; }
-
-                        object raw;
-                        r.TryGetValue("list", out raw);
-                        object[] arr = raw as object[];
-
-                        results.BeginUpdate();
-                        results.Items.Clear();
-                        if (arr != null)
-                        {
-                            foreach (object o in arr)
-                            {
-                                Dictionary<string, object> s = o as Dictionary<string, object>;
-                                if (s == null) continue;
-                                ListViewItem it = new ListViewItem(MainForm.Str(s, "name"));
-                                it.SubItems.Add(MainForm.Str(s, "artists"));
-                                it.SubItems.Add(MainForm.Str(s, "album"));
-                                it.SubItems.Add(MainForm.DurationText(MainForm.Num(s, "duration")));
-                                it.Tag = MainForm.Str(s, "id");
-                                results.Items.Add(it);
-                            }
-                        }
-                        results.EndUpdate();
-
-                        if (results.Items.Count == 0) SetSelectedInfo("没搜到，换个词试试", Color.Firebrick);
-                        else if (results.Items.Count == 1) results.Items[0].Selected = true;
-                        else SetSelectedInfo("从下面挑一首（共 " + results.Items.Count + " 首）", Color.Gray);
+                        if (IsDisposed || version != searchVersion) return;
+                        try { ApplySearchResults(r); }
+                        catch (Exception ex) { SetSelectedInfo("显示搜索结果失败：" + ex.Message, Color.Firebrick); }
                     });
                 }
                 catch { }
             });
+        }
+
+        void ApplySearchResults(Dictionary<string, object> response)
+        {
+            bool ok = response.ContainsKey("ok") && response["ok"] is bool && (bool)response["ok"];
+            if (!ok) { SetSelectedInfo("搜索失败：" + MainForm.Str(response, "error"), Color.Firebrick); return; }
+
+            object raw;
+            response.TryGetValue("list", out raw);
+            // JavaScriptSerializer creates ArrayList for arrays nested in a
+            // Dictionary<string, object>. Casting only to object[] loses every song.
+            System.Collections.IList songs = raw as System.Collections.IList;
+            if (songs == null)
+            {
+                SetSelectedInfo("搜索结果格式异常，请重试", Color.Firebrick);
+                return;
+            }
+            results.BeginUpdate();
+            try
+            {
+                results.Items.Clear();
+                foreach (object value in songs)
+                {
+                    Dictionary<string, object> song = value as Dictionary<string, object>;
+                    if (song == null) continue;
+                    ListViewItem item = new ListViewItem(MainForm.Str(song, "name"));
+                    item.SubItems.Add(MainForm.Str(song, "artists"));
+                    item.SubItems.Add(MainForm.Str(song, "album"));
+                    item.SubItems.Add(MainForm.DurationText(MainForm.Num(song, "duration")));
+                    item.Tag = MainForm.Str(song, "id");
+                    results.Items.Add(item);
+                }
+            }
+            finally { results.EndUpdate(); }
+
+            if (results.Items.Count == 0) SetSelectedInfo("没搜到，换个词试试", Color.Firebrick);
+            else
+            {
+                SetSelectedInfo("从下面挑一首（共 " + results.Items.Count + " 首）", Color.Gray);
+                if (results.Items.Count == 1) results.Items[0].Selected = true;
+            }
         }
     }
 
     // ==================== 主窗口 ====================
     public class MainForm : Form
     {
-        const int WM_HOTKEY = 0x0312;
         const int HOTKEY_ID_BASE = 0x4000;
         const int HOTKEY_ID_RESTORE = 0x4100;
 
@@ -538,6 +911,7 @@ namespace NcmHotkey
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
         AppConfig config = new AppConfig();
         readonly Dictionary<int, bool> registered = new Dictionary<int, bool>();
+        readonly PassiveHotkeys hotkeys = new PassiveHotkeys();
         PlayWorker worker = new PlayWorker();
 
         ListView list = new ListView();
@@ -584,6 +958,7 @@ namespace NcmHotkey
             StartPosition = FormStartPosition.CenterScreen;
 
             BuildUi();
+            hotkeys.Pressed += OnHotkeyPressed;
             LoadConfig();
             UpdateClipUi();          // BuildUi 跑在 LoadConfig 之前，读到的还是默认配置，这里补一次
             ResolveNode();
@@ -608,7 +983,6 @@ namespace NcmHotkey
             if (inited) return;
             inited = true;
             worker.LogLine += OnWorkerLog;
-            StartWorker();
             RegisterAll();
             pingTimer.Interval = 10000;
             pingTimer.Tick += delegate { Ping(); };
@@ -787,19 +1161,25 @@ namespace NcmHotkey
             InitOnce();
         }
 
-        protected override void WndProc(ref Message m)
+        void OnHotkeyPressed(int id)
         {
-            if (m.Msg == WM_HOTKEY)
+            // Keep the hook callback short. Music work runs only after the original
+            // keystroke has been passed on. Editing bindings must not play music.
+            if (capturingRestore || Form.ActiveForm is BindingDialog || IsDisposed) return;
+            try
             {
-                int id = m.WParam.ToInt32();
-                if (id == HOTKEY_ID_RESTORE) DoRestore();
-                else
+                BeginInvoke((MethodInvoker)delegate
                 {
-                    int index = id - HOTKEY_ID_BASE;
-                    if (index >= 0 && index < config.hotkeys.Count) Fire(index);
-                }
+                    if (paused || exiting) return;
+                    if (id == HOTKEY_ID_RESTORE) DoRestore();
+                    else
+                    {
+                        int index = id - HOTKEY_ID_BASE;
+                        if (index >= 0 && index < config.hotkeys.Count) Fire(index);
+                    }
+                });
             }
-            base.WndProc(ref m);
+            catch (InvalidOperationException) { }
         }
 
         // ---------- 复位键的捕获 ----------
@@ -816,10 +1196,7 @@ namespace NcmHotkey
         {
             if (!capturingRestore) return base.ProcessCmdKey(ref msg, keyData);
             Keys k = keyData & Keys.KeyCode;
-            if (k == Keys.Control || k == Keys.Alt || k == Keys.Shift ||
-                k == Keys.LControlKey || k == Keys.RControlKey ||
-                k == Keys.LShiftKey || k == Keys.RShiftKey ||
-                k == Keys.LMenu || k == Keys.RMenu || k == Keys.LWin || k == Keys.RWin)
+            if (HotkeyApi.IsModifierKey(k))
                 return true;
 
             capturingRestore = false;
@@ -928,13 +1305,11 @@ namespace NcmHotkey
                     failures.Add("第 " + (i + 1) + " 条：" + err);
                     continue;
                 }
-                bool ok = HotkeyApi.RegisterHotKey(Handle, HOTKEY_ID_BASE + i, mods, vk);
+                bool ok = hotkeys.Add(HOTKEY_ID_BASE + i, mods, vk);
                 registered[i] = ok;
                 if (!ok)
                 {
-                    int code = Marshal.GetLastWin32Error();
-                    string why = code == 1409 ? "这个按键已经被别的程序占用了" : "注册失败（错误码 " + code + "）";
-                    failures.Add("第 " + (i + 1) + " 条 " + b.hotkey + "：" + why);
+                    failures.Add("第 " + (i + 1) + " 条 " + b.hotkey + "：与另一条音乐热键重复");
                 }
             }
 
@@ -948,13 +1323,23 @@ namespace NcmHotkey
                 }
                 else
                 {
-                    restoreRegistered = HotkeyApi.RegisterHotKey(Handle, HOTKEY_ID_RESTORE, mods, vk);
+                    restoreRegistered = hotkeys.Add(HOTKEY_ID_RESTORE, mods, vk);
                     if (!restoreRegistered)
                     {
-                        int code = Marshal.GetLastWin32Error();
-                        failures.Add("复位键 " + config.restoreHotkey + "：" +
-                            (code == 1409 ? "这个按键已经被别的程序占用了" : "注册失败（错误码 " + code + "）"));
+                        failures.Add("复位键 " + config.restoreHotkey + "：与播放键重复");
                     }
+                }
+            }
+
+            if (registered.ContainsValue(true) || restoreRegistered)
+            {
+                try { hotkeys.Start(); Log("按键监听已启用（保留原按键功能）"); }
+                catch (Exception ex)
+                {
+                    hotkeys.Dispose();
+                    for (int i = 0; i < config.hotkeys.Count; i++) registered[i] = false;
+                    restoreRegistered = false;
+                    failures.Add("按键监听启动失败：" + ex.Message);
                 }
             }
 
@@ -962,8 +1347,8 @@ namespace NcmHotkey
             {
                 MessageBox.Show(this,
                     "下面这些热键没能生效：\n\n" + string.Join("\n", failures.ToArray()) +
-                    "\n\n换一个组合键试试（比如带上 Ctrl+Alt）。",
-                    "热键冲突", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "\n\n请检查按键设置后重试。",
+                    "热键设置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 SetStatus("有 " + failures.Count + " 个热键没生效");
             }
             else if (config.hotkeys.Count > 0 || restoreRegistered)
@@ -975,11 +1360,7 @@ namespace NcmHotkey
 
         void UnregisterAll()
         {
-            for (int i = 0; i < config.hotkeys.Count; i++)
-            {
-                try { HotkeyApi.UnregisterHotKey(Handle, HOTKEY_ID_BASE + i); } catch { }
-            }
-            try { HotkeyApi.UnregisterHotKey(Handle, HOTKEY_ID_RESTORE); } catch { }
+            hotkeys.Dispose();
             restoreRegistered = false;
             registered.Clear();
         }
@@ -1077,20 +1458,38 @@ namespace NcmHotkey
         // ---------- 工作进程 ----------
         void ResolveNode()
         {
-            try
-            {
-                string p = Path.Combine(appDir, "node.txt");
-                if (File.Exists(p))
-                {
-                    string t = File.ReadAllText(p).Trim();
-                    if (t.Length > 0) nodeExe = t;
-                }
-            }
-            catch { }
+            nodeExe = RuntimePaths.FindNode(appDir);
         }
 
         void ResolveCloudMusic()
         {
+            try
+            {
+                string hint = Path.Combine(appDir, "cloudmusic.txt");
+                if (File.Exists(hint))
+                {
+                    string configured = File.ReadAllText(hint).Trim().Trim('"');
+                    if (File.Exists(configured)) { cloudMusicPath = configured; return; }
+                }
+            }
+            catch { }
+            // Microsoft Store 版本不一定有普通安装器的注册表项。
+            foreach (Process process in Process.GetProcessesByName("cloudmusic"))
+            {
+                try
+                {
+                    string running = process.MainModule.FileName;
+                    if (File.Exists(running))
+                    {
+                        cloudMusicPath = running;
+                        try { File.WriteAllText(Path.Combine(appDir, "cloudmusic.txt"), running, new UTF8Encoding(false)); }
+                        catch { }
+                        return;
+                    }
+                }
+                catch { }
+                finally { process.Dispose(); }
+            }
             string[] guesses = new string[]
             {
                 @"D:\CloudMusic\cloudmusic.exe",
@@ -1120,6 +1519,14 @@ namespace NcmHotkey
 
         void StartWorker()
         {
+            ResolveNode();
+            if (string.IsNullOrEmpty(nodeExe))
+            {
+                string error = "找不到播放运行时，请完整解压新版程序包（需包含 runtime\\node.exe）";
+                SetStatus(error);
+                Log(error);
+                return;
+            }
             string script = Path.Combine(appDir, "worker.mjs");
             if (!File.Exists(script))
             {
@@ -1133,13 +1540,18 @@ namespace NcmHotkey
             catch (Exception ex)
             {
                 // 不弹对话框（保持静默），只写状态栏和日志
-                SetStatus("启动播放服务失败：" + ex.Message + "（需要系统里有 node）");
-                Log("启动播放服务失败：" + ex.Message);
+                SetStatus("启动播放服务失败：" + ex.Message + "（请检查 runtime 目录是否解压完整）");
+                Log("启动播放服务失败：" + ex.Message + "；运行时=" + nodeExe);
             }
         }
 
         void Ping()
         {
+            if (!worker.Running)
+            {
+                StartWorker();
+                if (!worker.Running) return;
+            }
             worker.Send(new Dictionary<string, object> { { "cmd", "status" }, { "port", config.port } },
                 delegate(Dictionary<string, object> r)
                 {
@@ -1201,7 +1613,10 @@ namespace NcmHotkey
 
         void LaunchCloudMusic()
         {
-            if (cloudMusicPath == null)
+            if (cloudMusicPath == null) ResolveCloudMusic();
+            string storeAppId = CloudMusicStore.GetAppIdForExecutable(cloudMusicPath);
+            if (cloudMusicPath == null) storeAppId = CloudMusicStore.FindInstalledAppId();
+            if (cloudMusicPath == null && storeAppId == null)
             {
                 MessageBox.Show(this, "找不到 cloudmusic.exe。请手动打开网易云音乐。", "找不到客户端",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1209,9 +1624,15 @@ namespace NcmHotkey
             }
             try
             {
-                ProcessStartInfo psi = new ProcessStartInfo(cloudMusicPath);
-                psi.Arguments = "--remote-debugging-port=" + config.port + " --remote-debugging-address=127.0.0.1";
-                Process.Start(psi);
+                string arguments = "--remote-debugging-port=" + config.port + " --remote-debugging-address=127.0.0.1";
+                if (storeAppId != null) CloudMusicStore.Activate(storeAppId, arguments);
+                else
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo(cloudMusicPath);
+                    psi.Arguments = arguments;
+                    Process process = Process.Start(psi);
+                    if (process != null) process.Dispose();
+                }
                 SetStatus("正在打开网易云…稍等十几秒再按热键");
             }
             catch (Exception ex)
