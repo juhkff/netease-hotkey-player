@@ -38,7 +38,9 @@ test('play timeout and restore preemption release the queue without losing the c
     assert.equal((await restoring).ok,true);
     await new Promise(resolve=>setTimeout(resolve,650));
     assert.equal((await send({cmd:'status'})).suspended,false);
-    assert.equal((await send({cmd:'play',songId:'clip',deadlineMs:Date.now()-1})).ok,false);
+    // Separate Windows processes may sample the wall clock a few milliseconds
+    // apart. Make expiration unambiguous instead of relying on a 1 ms margin.
+    assert.equal((await send({cmd:'play',songId:'clip',deadlineMs:Date.now()-1000})).ok,false);
     assert.equal((await send({cmd:'status'})).suspended,false);
   } finally {child.stdin.end();child.kill();lines.close()}
 });
@@ -104,7 +106,7 @@ test('restore deadline releases the queue, retains the checkpoint and ignores a 
     assert.equal((await send({cmd:'play',songId:'clip'})).ok,true);
     await new Promise(r=>setTimeout(r,550));
     const state=await send({cmd:'status'});assert.equal(state.suspended,true);assert.equal(state.savedName,'original-2');
-    assert.equal((await send({cmd:'restore',deadlineMs:Date.now()-1})).ok,false);
+    assert.equal((await send({cmd:'restore',deadlineMs:Date.now()-1000})).ok,false);
     assert.equal((await send({cmd:'status'})).name,'attempts-2');
   } finally {child.stdin.end();child.kill();lines.close()}
 });
