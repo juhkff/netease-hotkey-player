@@ -9,6 +9,7 @@ test('play timeout and restore preemption release the queue without losing the c
   const output = resolve('out'); await mkdir(output, { recursive: true });
   const root = await mkdtemp(join(output, 'play-deadline-')); await mkdir(join(root, 'lib'));
   await copyFile(new URL('../worker.mjs', import.meta.url), join(root, 'worker.mjs'));
+  await copyFile(new URL('../lib/awoo.mjs', import.meta.url), join(root, 'lib', 'awoo.mjs'));
   await writeFile(join(root, 'lib', 'ncm.mjs'), `
     export const isReady=async()=>true;
     export async function connect(){return {
@@ -22,7 +23,7 @@ test('play timeout and restore preemption release the queue without losing the c
   const lines=createInterface({input:child.stdout}); const pending=new Map();let id=0, checkpoint;
   child.stderr.setEncoding('utf8');child.stderr.on('data',text=>{if(text.includes('记下中断点')&&checkpoint){checkpoint();checkpoint=null}});
   lines.on('line',line=>{const r=JSON.parse(line);const finish=pending.get(r.id);if(finish){pending.delete(r.id);finish(r)}});
-  const send=cmd=>new Promise(resolve=>{const key=++id;pending.set(key,resolve);child.stdin.write(JSON.stringify({...cmd,id:key})+'\n')});
+  const send=cmd=>new Promise(resolve=>{const key=++id;pending.set(key,resolve);child.stdin.write(JSON.stringify({awooPort:0,...cmd,id:key})+'\n')});
   try {
     assert.equal((await send({cmd:'ping'})).ready,true);
     const timed=await send({cmd:'play',songId:'clip',deadlineMs:Date.now()+200});
@@ -47,6 +48,7 @@ test('real worker reconnects after Chinese connection/timeout errors and keeps s
   const root = await mkdtemp(join(output, 'worker-recovery-'));
   await mkdir(join(root, 'lib'));
   await copyFile(new URL('../worker.mjs', import.meta.url), join(root, 'worker.mjs'));
+  await copyFile(new URL('../lib/awoo.mjs', import.meta.url), join(root, 'lib', 'awoo.mjs'));
   await writeFile(join(root, 'lib', 'ncm.mjs'), `
     let count=0;
     export const isReady=async()=>true;
@@ -75,6 +77,7 @@ test('restore deadline releases the queue, retains the checkpoint and ignores a 
   const output = resolve('out'); await mkdir(output, { recursive: true });
   const root = await mkdtemp(join(output, 'restore-deadline-')); await mkdir(join(root, 'lib'));
   await copyFile(new URL('../worker.mjs', import.meta.url), join(root, 'worker.mjs'));
+  await copyFile(new URL('../lib/awoo.mjs', import.meta.url), join(root, 'lib', 'awoo.mjs'));
   await writeFile(join(root, 'lib', 'ncm.mjs'), `
     let attempts=0,snapshots=0;
     export const isReady=async()=>true;
@@ -92,7 +95,7 @@ test('restore deadline releases the queue, retains the checkpoint and ignores a 
   const child=spawn(process.execPath,[join(root,'worker.mjs')],{cwd:root,windowsHide:true,stdio:['pipe','pipe','pipe']});
   child.stderr.resume();const lines=createInterface({input:child.stdout});const pending=new Map();let id=0;
   lines.on('line',line=>{const r=JSON.parse(line);const finish=pending.get(r.id);if(finish){pending.delete(r.id);finish(r)}});
-  const send=cmd=>new Promise(resolve=>{const key=++id;pending.set(key,resolve);child.stdin.write(JSON.stringify({...cmd,id:key})+'\n')});
+  const send=cmd=>new Promise(resolve=>{const key=++id;pending.set(key,resolve);child.stdin.write(JSON.stringify({awooPort:0,...cmd,id:key})+'\n')});
   try {
     assert.equal((await send({cmd:'play',songId:'clip'})).ok,true);
     const failed=await send({cmd:'restore',deadlineMs:Date.now()+80});assert.equal(failed.ok,false);

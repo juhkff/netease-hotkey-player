@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $BuildResult) { $BuildResult = Join-Path $root 'dist\build-result.json' }
 $build = Get-Content -LiteralPath $BuildResult -Raw | ConvertFrom-Json
-$required = @('NcmHotkey.exe','worker.mjs','lib/ncm.mjs','README.md','LICENSE',
+$required = @('NcmHotkey.exe','worker.mjs','lib/ncm.mjs','lib/awoo.mjs','README.md','LICENSE',
     'config.example.json','install.ps1','install.cmd','runtime/node.exe','runtime/LICENSE','runtime/version.txt')
 $seen = New-Object 'System.Collections.Generic.HashSet[string]'
 Add-Type -AssemblyName System.IO.Compression.FileSystem

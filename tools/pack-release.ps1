@@ -44,6 +44,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $stage 'NcmHotkey.exe')))
 
 Copy-Item (Join-Path $Src 'worker.mjs')          $stage -Force
 Copy-Item (Join-Path $Src 'lib\ncm.mjs')         (Join-Path $stage 'lib') -Force
+Copy-Item (Join-Path $Src 'lib\awoo.mjs')        (Join-Path $stage 'lib') -Force
 Copy-Item (Join-Path $Src 'README.md')           $stage -Force
 Copy-Item (Join-Path $Src 'LICENSE')             $stage -Force
 Copy-Item (Join-Path $Src 'config.example.json') $stage -Force

@@ -9,6 +9,7 @@
 //   {"id":4,"cmd":"play","songId":"1330348068","seconds":15,"keyword":null}
 import { createInterface } from 'node:readline';
 import { connect, isReady } from './lib/ncm.mjs';
+import { findAwoo, playWithAwoo } from './lib/awoo.mjs';
 
 const portArg = Number(process.argv[2] || 9229);
 let conn = null;
@@ -71,6 +72,8 @@ async function handle(cmd, operation = {}) {
       const startedAt = Date.now();
       const onProgress = step => { if (!operation.cancelled) log(`播放步骤 songId=${cmd.songId} +${Date.now() - startedAt}ms: ${step}`); };
       onProgress('开始请求');
+      const awoo = await findAwoo(cmd.awooPort ?? 5555, { signal: operation.controller?.signal }) || saved?.awoo;
+      assertActive();
       // 播放片段之前先记下「中断点」：谁在放、放到哪、待播放队列长什么样。
       // 已经有中断点就不覆盖 —— 连按两个片段键时，要复位的是最原始那个现场。
       if (!saved) {
@@ -83,15 +86,24 @@ async function handle(cmd, operation = {}) {
           }
         } catch (e) { if (operation.cancelled) throw e; log('记中断点失败：' + e.message); }
       }
+      // Keep the routing with the checkpoint, including when playback fails or
+      // the user presses a second clip before restoring the original song.
+      if (saved && awoo) saved.awoo = awoo;
+      const startTrack = awoo ? async id => {
+        assertActive();
+        await playWithAwoo(awoo, id, { signal: operation.controller?.signal });
+        assertActive();
+      } : undefined;
+      if (awoo) onProgress('已连接嗷呜 ' + awoo.version + '，由点歌机协调切歌');
       const secs = cmd.seconds == null || cmd.seconds === '' ? null : Number(cmd.seconds);
       if (secs == null || isNaN(secs)) {
-        const r = await c.playTrackById(String(cmd.songId), { keyword: cmd.keyword || undefined, onProgress });
+        const r = await c.playTrackById(String(cmd.songId), { keyword: cmd.keyword || undefined, onProgress, startTrack });
         assertActive();
         if (!r.ok) throw new Error(`《${(r.info && r.info.name) || cmd.songId}》没能开始播放（可能当前账号放不了这首歌）`);
         return { ok: true, name: r.info.name, artists: r.info.artists, fromStart: true,
                  savedName: saved ? saved.name : null };
       }
-      const r = await c.playFrom(String(cmd.songId), secs, { keyword: cmd.keyword || undefined, onProgress });
+      const r = await c.playFrom(String(cmd.songId), secs, { keyword: cmd.keyword || undefined, onProgress, startTrack });
       assertActive();
       return {
         ok: true, name: r.song.name, artists: r.song.artists,
@@ -105,7 +117,12 @@ async function handle(cmd, operation = {}) {
       if (!saved) return { ok: true, nothing: true };
       const s = saved;
       log(`开始复位：${s.name || s.songId} @ ${s.seconds}s`);
-      const r = await c.restore(s);
+      const startTrack = s.awoo ? async id => {
+        if (operation.cancelled) throw new Error('复位请求已取消，中断点保留');
+        await playWithAwoo(s.awoo, id, { signal: operation.controller?.signal, requestedBy: '网易云热键工具复位' });
+        if (operation.cancelled) throw new Error('复位请求已取消，中断点保留');
+      } : undefined;
+      const r = await c.restore(s, { startTrack });
       if (operation.cancelled) throw new Error('复位请求已超时，中断点已保留');
       saved = null;
       log(`复位：回到 ${r.song} @ ${r.seeked}s（退 ${r.steps} 步，队列清理=${r.cleaned}）`);
@@ -125,12 +142,12 @@ async function handle(cmd, operation = {}) {
 async function execute(cmd) {
   if (cmd.deadlineMs && Date.now() >= Number(cmd.deadlineMs)) throw new Error('请求已过期，未执行；中断点已保留');
   if (cmd.cmd !== 'restore' && cmd.cmd !== 'play') return handle(cmd);
-  const operation = { cancelled: false, kind: cmd.cmd };
+  const operation = { cancelled: false, kind: cmd.cmd, controller: new AbortController() };
   const remaining = cmd.deadlineMs ? Number(cmd.deadlineMs) - Date.now() : 20000;
   const timeoutMs = Math.max(1, Math.min(20000, remaining));
   let timer;
   const cancelled = new Promise((_, reject) => {
-    operation.cancel = reason => { if (operation.cancelled) return; operation.cancelled = true; operation.reason = reason; reject(new Error(reason)); dropConn(); };
+    operation.cancel = reason => { if (operation.cancelled) return; operation.cancelled = true; operation.reason = reason; operation.controller.abort(); reject(new Error(reason)); dropConn(); };
   });
   activeOperation = operation;
   try {

@@ -13,5 +13,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Gate test build failed' }
 if ($LASTEXITCODE -ne 0) { throw 'Gate tests failed' }
 Copy-Item -LiteralPath (Join-Path $repo 'worker.mjs') -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $repo 'lib\ncm.mjs') -Destination (Join-Path $stage 'lib\ncm.mjs') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'lib\awoo.mjs') -Destination (Join-Path $stage 'lib\awoo.mjs') -Force
 Copy-Item -LiteralPath (Join-Path $repo 'out\runtime\node.exe') -Destination (Join-Path $stage 'runtime\node.exe') -Force
 Write-Output (Join-Path $stage 'GgstMusicProbe.exe')

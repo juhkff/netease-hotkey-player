@@ -60,6 +60,7 @@ if (Test-Path -LiteralPath $bundledNode) {
 Copy-Item (Join-Path $here 'NcmHotkey.exe')  $app -Force
 Copy-Item (Join-Path $here 'worker.mjs')     $app -Force
 Copy-Item (Join-Path $here 'lib\ncm.mjs')    (Join-Path $app 'lib') -Force
+Copy-Item (Join-Path $here 'lib\awoo.mjs')   (Join-Path $app 'lib') -Force
 if (Test-Path (Join-Path $here 'README.md')) {
     Copy-Item (Join-Path $here 'README.md')  $app -Force
 }

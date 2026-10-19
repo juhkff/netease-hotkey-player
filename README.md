@@ -175,6 +175,12 @@ GGST 当前只读支持本机已验证 EXE（Steam build 24797162）；版本校
 - 复位先尝试有限次数的 «上一首»；无法回到原曲时，改用原生歌曲列表重新加载，再恢复位置和队列。
 - 不想要这套行为，把「点歌机模式」的勾去掉即可，片段键就退化成单纯的「切歌并跳转」。
 
+**嗷呜点歌机兼容（实验）。** 检测到嗷呜正在控制网易云时，插播与复位改走嗷呜自身的本地播放入口，使它的“下一首守卫”认可这次切歌；歌曲起点和原曲进度仍由本工具恢复，不反复抢回被顶替的歌曲。嗷呜自己的待播队列不主动重排或删除。通过该入口播放的歌曲在嗷呜界面会显示为本工具插播或复位请求。
+
+已在嗷呜 v1.2.3 上，带临时待播项实测两轮播放、保持和复位；联网触发后的整套效果仍需实战复测。默认检测其**内部接口端口 5555**，不是只读的 5556。使用自定义内部端口时，可在本工具 `config.json` 设置 `awooPort`；设为 `0` 关闭检测。未运行嗷呜时沿用原生列表控制。嗷呜已被识别但播放未确认时会报错，保留中断点，不再通过另一种切歌方式争抢控制权。
+
+排查歌曲被其他程序切走时，可在源码目录用 `out/runtime/node.exe tools/trace-playback.mjs 90` 只读记录 90 秒的曲目、进度和队列变化。该源码诊断脚本将记录写入被 Git 忽略的 `out/playback-trace-*.jsonl`，不会修改播放或待播队列；免安装发布包不包含 `tools`。使用其他位置的运行时时，替换命令中的运行时路径。
+
 ---
 
 ## 五、开机自启
@@ -287,7 +293,7 @@ powershell -ExecutionPolicy Bypass -File tools\pack-release.ps1
 powershell -ExecutionPolicy Bypass -File tools\test-worker-lifecycle.ps1
 powershell -ExecutionPolicy Bypass -File tools\test-game-events.ps1
 # 无需启动客户端的切歌流程测试
-& .\out\runtime\node.exe --test tools\playback-performance.test.mjs tools\worker-recovery.test.mjs
+& .\out\runtime\node.exe --test tools\playback-performance.test.mjs tools\worker-recovery.test.mjs tools\awoo.test.mjs
 PowerShell -ExecutionPolicy Bypass -File tools\verify-package.ps1
 ```
 

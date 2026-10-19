@@ -60,7 +60,7 @@ jobs:
 
       - name: Test playback control flow
         run: |
-          & ./out/runtime/node.exe --test tools/playback-performance.test.mjs tools/worker-recovery.test.mjs
+          & ./out/runtime/node.exe --test tools/playback-performance.test.mjs tools/worker-recovery.test.mjs tools/awoo.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Playback tests failed.' }
 
       - name: Test game events without a running game

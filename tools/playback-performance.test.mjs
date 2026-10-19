@@ -90,6 +90,26 @@ test('an already visible target is played without starting another search', asyn
   });
 });
 
+test('a jukebox-owned play bypasses direct double-clicks even when the track is visible', async () => {
+  await withClient({ initialState: { songId: '316100', duration: 260, seconds: .3, playing: true } }, async (client, calls) => {
+    const requested = [];
+    const result = await client.playTrackById('316100', { startTrack: async id => { requested.push(id); } });
+    assert.equal(result.ok, true); assert.equal(result.method, 'awoo-native');
+    assert.deepEqual(requested, ['316100']);
+    assert.equal(calls.clicks, 0); assert.equal(calls.searches, 0);
+  });
+});
+
+test('restore announces the original track to its jukebox before native seek', async () => {
+  await withClient({ initialState: { songId: '316100', duration: 260, seconds: .3, playing: true } }, async (client, calls) => {
+    const requested = [];
+    const result = await client.restore({ songId: '316100', seconds: 22, playing: false, queue: [] },
+      { startTrack: async id => { requested.push(id); }, settleMs: 1 });
+    assert.deepEqual(requested, ['316100']); assert.equal(result.seeked, 22);
+    assert.equal(result.state.playing, false); assert.equal(calls.jumps, 0); assert.equal(calls.clicks, 0);
+  });
+});
+
 test('a missing row still uses search and matches the target ID', async () => {
   await withClient({ visible: false }, async (client, calls) => {
     const result = await client.playTrackById('316100');

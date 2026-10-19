@@ -152,8 +152,9 @@ namespace NcmHotkey
         /// <summary>是否弹托盘气泡通知。默认关（保持静默），结果只显示在状态栏和日志里。</summary>
         public bool notify { get; set; }
         public bool gameEventsEnabled { get; set; }
+        public int awooPort { get; set; }
         public List<GameEventRule> gameEvents { get; set; }
-        public AppConfig() { port = 9229; hotkeys = new List<HotkeyBinding>(); restoreHotkey = ""; clipMode = true; notify = false; gameEvents = new List<GameEventRule>(); }
+        public AppConfig() { port = 9229; awooPort = 5555; hotkeys = new List<HotkeyBinding>(); restoreHotkey = ""; clipMode = true; notify = false; gameEvents = new List<GameEventRule>(); }
     }
 
     // ==================== 全局热键 ====================
@@ -1327,6 +1328,7 @@ namespace NcmHotkey
                         if (config.hotkeys == null) config.hotkeys = new List<HotkeyBinding>();
                         if (config.gameEvents == null) config.gameEvents = new List<GameEventRule>();
                         if (config.port <= 0) config.port = 9229;
+                        if (config.awooPort != 0 && (config.awooPort < 1024 || config.awooPort > 65535)) config.awooPort = 5555;
                     }
                 }
             }
@@ -1763,6 +1765,7 @@ namespace NcmHotkey
             cmd["songId"] = b.songId;
             cmd["seconds"] = b.seconds > 0 ? (object)b.seconds : null;
             cmd["port"] = config.port;
+            cmd["awooPort"] = config.awooPort;
 
             worker.Send(cmd, delegate(Dictionary<string, object> r)
             {

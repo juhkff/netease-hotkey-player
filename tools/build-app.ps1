@@ -44,6 +44,7 @@ Write-Host ("编译成功：" + $exe + "  " + (Get-Item $exe).Length + " 字节"
 # ---------- 3. 部署运行时文件 ----------
 Copy-Item "$src\worker.mjs" $app -Force
 Copy-Item "$src\lib\ncm.mjs" (Join-Path $app 'lib') -Force
+Copy-Item "$src\lib\awoo.mjs" (Join-Path $app 'lib') -Force
 Write-Host "已拷贝 worker.mjs 与 lib\ncm.mjs"
 
 # ---------- 4. 记录 node 路径（托盘程序启动时 PATH 里常常没有 node） ----------
