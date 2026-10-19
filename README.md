@@ -2,9 +2,11 @@
 
 [![Windows build](https://github.com/juhkff/netease-hotkey-player/actions/workflows/windows-release.yml/badge.svg)](https://github.com/juhkff/netease-hotkey-player/actions/workflows/windows-release.yml)
 
-[下载 Windows x64 免安装包](https://github.com/juhkff/netease-hotkey-player/releases/latest) · [版本说明](docs/releases/v1.0.6.md)
+[下载 Windows x64 免安装包](https://github.com/juhkff/netease-hotkey-player/releases/latest) · [版本说明](docs/releases/v1.0.7.md)
 
 一个挂在后台的 Windows 托盘小程序：**按一个组合键（任意界面都生效），网易云立刻开始播放你指定的那首歌，并且从你指定的秒数开始。**
+
+**v1.0.7 新增嗷呜点歌机兼容**：自动识别正在控制网易云的嗷呜，通过其本地接口协调插播和复位，避免“下一首守卫”把龙装音乐顶掉。未使用嗷呜时保留原控制方式，配置和验证范围见下文。
 
 **v1.0.6 实验功能：监听游戏事件**。主窗口或托盘菜单的“游戏事件…”可以添加“游戏 → 事件 → 歌曲”规则，逐条启停，设置歌曲起点和触发延迟。当前仅有一个内置游戏适配：**《罪恶装备·奋战》凯发动龙装**；其他游戏和事件需增加对应适配，不能仅靠填写名称监听。
 
@@ -285,7 +287,7 @@ powershell -ExecutionPolicy Bypass -File tools\pack-release.ps1
 
 首次打包会从 Node.js 官方下载固定版本的 Windows x64 运行时，校验官方 SHA-256，只提取 `node.exe` 和许可证到项目的 `out/runtime`。这一步需要网络；不会安装 Node、修改 PATH 或注册系统服务。
 
-当前输出为 `dist/netease-hotkey-player-v1.0.6-win-x64.zip`。完整解压后可直接运行；`runtime/LICENSE` 包含运行时第三方许可。构建目录信息见 `dist/build-result.json`。
+当前输出为 `dist/netease-hotkey-player-v1.0.7-win-x64.zip`。完整解压后可直接运行；`runtime/LICENSE` 包含运行时第三方许可。构建目录信息见 `dist/build-result.json`。
 
 验证按键解析、搜索显示、进程启动失败与恢复、通信及运行时查找：
 
@@ -301,12 +303,12 @@ PowerShell -ExecutionPolicy Bypass -File tools\verify-package.ps1
 
 推送到 `main` 或提交 PR 会自动在 Windows 上获取并校验独立运行时、运行测试、构建并检查免安装包。测试不要求安装网易云，也不会播放音乐。
 
-发布时先更新 `app/NcmHotkey.cs` 中的程序集版本（例如 `1.0.6.0`）、打包脚本的默认版本和相应文档，再推送同版本标签：
+发布时先更新 `app/NcmHotkey.cs` 中的程序集版本（例如 `1.0.8.0`）、打包脚本的默认版本和相应文档，再推送同版本标签：
 
 ```powershell
 git push origin main
-git tag -a v1.0.6 -m "Release v1.0.6"
-git push origin v1.0.6
+git tag -a v1.0.8 -m "Release v1.0.8"
+git push origin v1.0.8
 ```
 
 标签版本必须与程序集版本一致。Actions 会通过全部检查后，自动上传 ZIP 与 SHA-256 文件并发布 Release；匹配的 `docs/releases/<标签>.md` 作为版本说明，没有该文件时生成默认说明。也可在 Actions 页手动运行 **Windows build and release**，输入已有标签重跑。发布使用仓库内置的 `GITHUB_TOKEN`，无需另配个人令牌。
