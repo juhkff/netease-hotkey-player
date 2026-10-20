@@ -6,11 +6,11 @@ import { connect } from '../lib/ncm.mjs';
 // No client, input injection, network access or audio playback is used.
 async function withClient(options, run) {
   const originalFetch = globalThis.fetch, originalSocket = globalThis.WebSocket;
-  const calls = { metadata: 0, searches: 0, queries: [], privilege: 0, clicks: 0, pauses: 0, tabClicks: 0, jumps: 0, queueWrites: 0, seeks: 0 };
+  const calls = { metadata: 0, searches: 0, queries: [], privilege: 0, clicks: 0, pauses: 0, resumes: 0, tabClicks: 0, jumps: 0, queueWrites: 0, seeks: 0 };
   let songTab = false, resetTab = !!options.resetTabWhileLoading;
   let visible = options.visible ?? true, query = options.query || '', failed = false;
   let state = options.initialState || { songId: 'other', duration: 200, seconds: 10, playing: true };
-  let clockAt = Date.now(), pendingSeek = null;
+  let clockAt = Date.now(), pendingSeek = null, pendingPauseAt = null;
   let queue = options.queue || ['316100', 'other'];
   const track = { id: 316100, name: '雨爱', artists: [{ name: '杨丞琳' }], album: { name: '雨爱' }, duration: 260000 };
   class Socket extends EventTarget {
@@ -32,6 +32,7 @@ async function withClient(options, run) {
             if (options.advancePlayback && state.playing) state.seconds += (now - clockAt) / 1000;
             clockAt = now;
             if (pendingSeek && now >= pendingSeek.at) { state.seconds = pendingSeek.seconds; pendingSeek = null; }
+            if (pendingPauseAt && now >= pendingPauseAt) { state.playing = false; pendingPauseAt = null; }
             value = { ...state };
           }
           else if (/^\(\(\) => \{\s+const want = /.test(expression)) {
@@ -47,7 +48,11 @@ async function withClient(options, run) {
             else value = visible && songTab ? 1 : 0;
           }
           else if (expression === 'window.__ncm.pause()') { calls.pauses++; state.playing = false; }
-          else if (expression === 'window.__ncm.resume()') { state.playing = true; clockAt = Date.now(); }
+          else if (expression === 'window.__ncm.resume()') {
+            calls.resumes++;
+            if (calls.resumes > (options.ignoreResumeCount || 0)) { state.playing = true; clockAt = Date.now(); }
+            if (calls.resumes === 1 && options.pauseAfterFirstResumeMs) pendingPauseAt = Date.now() + options.pauseAfterFirstResumeMs;
+          }
           else if (expression.includes('/api/song/enhance/privilege')) { calls.privilege++; value = 'null'; }
           else if (expression === 'window.__ncm.queueIds()') value = queue;
           else if (expression === 'window.__ncm.jump(-1)') {
@@ -57,8 +62,12 @@ async function withClient(options, run) {
           else if (expression.startsWith('window.__ncm.seek(')) {
             calls.seeks++;
             const seconds = Number(expression.slice(18,-1));
-            if (options.seekDelayMs) pendingSeek = { seconds, at: Date.now() + options.seekDelayMs };
-            else state.seconds = seconds;
+            if (!options.ignoreSeeks) {
+              if (options.seekDelayMs) pendingSeek = { seconds, at: Date.now() + options.seekDelayMs };
+              else state.seconds = seconds;
+            }
+            if (options.changeTrackOnSeek) state.songId = options.changeTrackOnSeek;
+            options.onSeek?.();
           }
           else if (expression.startsWith('window.__ncm.replaceQueue(')) {
             calls.queueWrites++;
@@ -205,5 +214,63 @@ test('unresponsive previous-track commands fall back to loading rather than retr
     const result = await client.restore({ songId: '316100', name: '雨爱', seconds: 3, duration: 260, playing: false, queue: [] },
       { settleMs: 1, stepWaitMs: 1 });
     assert.equal(calls.jumps, 2); assert.equal(result.reloaded, true); assert.equal(result.seeked, 3);
+  });
+});
+
+const originalPlaying = { songId: '316100', name: '雨爱', seconds: 22, duration: 260, playing: true, queue: [] };
+const selectedOriginal = { songId: '316100', duration: 260, seconds: 35, playing: true };
+
+test('restore waits for a slow native seek rather than repeatedly restarting it', async () => {
+  await withClient({ initialState: { ...selectedOriginal }, seekDelayMs: 500, advancePlayback: true }, async (client, calls) => {
+    const r = await client.restore(originalPlaying, { settleMs: 1 });
+    assert.equal(calls.seeks, 1); assert.equal(r.seeked, 22);
+    assert.equal(r.state.playing, true); assert.ok(r.state.seconds > 22.2);
+  });
+});
+
+test('restore recovers when the first resume is ignored or a late pause arrives', async () => {
+  for (const fault of [{ ignoreResumeCount: 1 }, { pauseAfterFirstResumeMs: 250 }]) {
+    await withClient({ initialState: { ...selectedOriginal }, advancePlayback: true, ...fault }, async (client, calls) => {
+      const r = await client.restore(originalPlaying, { settleMs: 1 });
+      assert.equal(r.state.playing, true); assert.ok(r.state.seconds > 22.2);
+      assert.ok(calls.resumes >= 2);
+    });
+  }
+});
+
+test('a failed restore seek releases its temporary pause but still reports failure', async () => {
+  await withClient({ initialState: { ...selectedOriginal }, ignoreSeeks: true }, async (client, calls) => {
+    await assert.rejects(client.restore(originalPlaying, { settleMs: 1, seekWaitMs: 120 }), /播放位置未恢复/);
+    assert.equal((await client.readState()).playing, true);
+    assert.ok(calls.resumes > 0);
+  });
+});
+
+test('a failed seek keeps an originally paused song paused', async () => {
+  await withClient({ initialState: { ...selectedOriginal }, ignoreSeeks: true }, async (client, calls) => {
+    await assert.rejects(client.restore({ ...originalPlaying, playing: false }, { settleMs: 1, seekWaitMs: 120 }), /播放位置未恢复/);
+    assert.equal((await client.readState()).playing, false); assert.equal(calls.resumes, 0);
+  });
+});
+
+test('a playing flag without advancing native progress is not a successful restore', async () => {
+  await withClient({ initialState: { ...selectedOriginal } }, async client => {
+    await assert.rejects(client.restore(originalPlaying, { settleMs: 1, playbackWaitMs: 600 }), /未确认继续播放/);
+  });
+});
+
+test('cancelled restore and a different selected track never receive a late resume', async () => {
+  await withClient({ initialState: { ...selectedOriginal } }, async (client, calls) => {
+    await assert.rejects(client.restore(originalPlaying, { signal: AbortSignal.abort() }), /取消/);
+    assert.equal(calls.pauses, 0); assert.equal(calls.resumes, 0);
+  });
+  const controller = new AbortController();
+  await withClient({ initialState: { ...selectedOriginal }, onSeek: () => controller.abort() }, async (client, calls) => {
+    await assert.rejects(client.restore(originalPlaying, { settleMs: 1, signal: controller.signal }), /取消/);
+    assert.equal(calls.resumes, 0);
+  });
+  await withClient({ initialState: { ...selectedOriginal }, changeTrackOnSeek: 'foreign' }, async (client, calls) => {
+    await assert.rejects(client.restore(originalPlaying, { settleMs: 1 }), /其他操作切换/);
+    assert.equal(calls.resumes, 0); assert.equal((await client.readState()).songId, 'foreign');
   });
 });

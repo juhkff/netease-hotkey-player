@@ -82,7 +82,7 @@ async function handle(cmd, operation = {}) {
           assertActive();
           if (s && s.songId) {
             saved = s;
-            log(`记下中断点：${s.name || s.songId} @ ${s.seconds}s，队列 ${s.queue.length} 首`);
+            log(`记下中断点：${s.name || s.songId} @ ${s.seconds}s，队列 ${s.queue.length} 首，原播放状态=${s.playing ? '播放' : '暂停'}（${s.playingState ?? 'unknown'}）`);
           }
         } catch (e) { if (operation.cancelled) throw e; log('记中断点失败：' + e.message); }
       }
@@ -122,10 +122,11 @@ async function handle(cmd, operation = {}) {
         await playWithAwoo(s.awoo, id, { signal: operation.controller?.signal, requestedBy: '网易云热键工具复位' });
         if (operation.cancelled) throw new Error('复位请求已取消，中断点保留');
       } : undefined;
-      const r = await c.restore(s, { startTrack });
+      const onProgress = step => { if (!operation.cancelled) log('复位步骤：' + step); };
+      const r = await c.restore(s, { startTrack, signal: operation.controller?.signal, onProgress });
       if (operation.cancelled) throw new Error('复位请求已超时，中断点已保留');
       saved = null;
-      log(`复位：回到 ${r.song} @ ${r.seeked}s（退 ${r.steps} 步，队列清理=${r.cleaned}）`);
+      log(`复位：回到 ${r.song} @ ${r.seeked}s（退 ${r.steps} 步，队列清理=${r.cleaned}，已确认状态=${r.state ? (r.state.playing ? '播放' : '暂停') : 'unknown'}）`);
       return {
         ok: true, name: r.song, target: r.target, seeked: r.seeked, error: r.error,
         steps: r.steps, cleaned: r.cleaned, reloaded: !!r.reloaded, wasPlaying: r.wasPlaying

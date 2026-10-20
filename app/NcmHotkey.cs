@@ -20,8 +20,8 @@ using System.Windows.Forms;
 using System.Xml;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.0.7.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.7.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.8.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.8.0")]
 
 namespace NcmHotkey
 {
