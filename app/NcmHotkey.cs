@@ -13,6 +13,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
@@ -25,6 +27,33 @@ using Microsoft.Win32;
 
 namespace NcmHotkey
 {
+    public enum DebugPortState { Available, InUse, Blocked }
+    public static class DebugPortPolicy
+    {
+        public static DebugPortState Inspect(int port)
+        {
+            TcpListener listener = null;
+            try {
+                listener = new TcpListener(IPAddress.Loopback, port);
+                listener.Server.ExclusiveAddressUse = true;
+                listener.Start(); return DebugPortState.Available;
+            } catch (SocketException e) {
+                return e.SocketErrorCode == SocketError.AddressAlreadyInUse ? DebugPortState.InUse : DebugPortState.Blocked;
+            } catch (ArgumentOutOfRangeException) { return DebugPortState.Blocked; }
+            finally { if (listener != null) listener.Stop(); }
+        }
+        public static int Select(int configured) { return Select(configured, Inspect); }
+        public static int Select(int configured, Func<int, DebugPortState> probe)
+        {
+            // An in-use configured port may already belong to our live client.
+            // Only change it when the OS forbids binding it, or it is invalid.
+            if (configured >= 1024 && configured <= 65535 && probe(configured) != DebugPortState.Blocked) return configured;
+            foreach (int candidate in new int[] { 19229, 29229, 39229, 49229, 49230, 49231 })
+                if (probe(candidate) == DebugPortState.Available) return candidate;
+            throw new InvalidOperationException("没有可用的本地调试端口，请检查 Windows 端口限制");
+        }
+    }
+
     // Store applications must be activated with their application identity;
     // directly executing a WindowsApps binary can fail with access denied.
     public static class CloudMusicStore
@@ -972,6 +1001,7 @@ namespace NcmHotkey
         int busyCount = 0;
         bool restorePending;
         bool playPending;
+        string portConnectionHint;
         bool startHidden = false;
         bool allowShow = false;
         bool inited = false;
@@ -1657,9 +1687,12 @@ namespace NcmHotkey
                         bool ok = r.ContainsKey("ok") && r["ok"] is bool && (bool)r["ok"];
                         if (!ok)
                         {
-                            SetStatus("没连上网易云 —— 请先点「启动网易云」按钮，或从桌面快捷方式「网易云音乐(带热键)」打开");
+                            if (DebugPortPolicy.Inspect(config.port) == DebugPortState.Blocked)
+                                SetStatus("端口 " + config.port + " 被系统限制；请退出网易云后点「启动网易云」自动换端口");
+                            else SetStatus(portConnectionHint ?? "未连上网易云（端口 " + config.port + "）；请从托盘退出网易云，再点「启动网易云」");
                             return;
                         }
+                        portConnectionHint = null;
                         string msg = "已连上网易云（端口 " + config.port + "）";
                         string now = Str(r, "name");
                         if (now.Length > 0) msg += " · 正在放：" + now;
@@ -1721,6 +1754,13 @@ namespace NcmHotkey
             }
             try
             {
+                int oldPort = config.port;
+                int selectedPort = DebugPortPolicy.Select(oldPort);
+                if (selectedPort != oldPort) {
+                    config.port = selectedPort; SaveConfig();
+                    portConnectionHint = "端口 " + oldPort + " 无法监听，已改用 " + selectedPort + "；请退出网易云后重新启动";
+                    Log(portConnectionHint);
+                }
                 string arguments = "--remote-debugging-port=" + config.port + " --remote-debugging-address=127.0.0.1";
                 if (storeAppId != null) CloudMusicStore.Activate(storeAppId, arguments);
                 else
@@ -1730,7 +1770,7 @@ namespace NcmHotkey
                     Process process = Process.Start(psi);
                     if (process != null) process.Dispose();
                 }
-                SetStatus("正在打开网易云…稍等十几秒再按热键");
+                SetStatus(portConnectionHint ?? "正在打开网易云…稍等十几秒再按热键");
             }
             catch (Exception ex)
             {

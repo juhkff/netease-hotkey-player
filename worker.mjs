@@ -26,7 +26,7 @@ async function getConn(port, operation) {
   assertActive();
   if (conn) return conn;
   if (!(await isReady(port))) {
-    throw new Error(`连不上网易云的调试端口 ${port}。请先退出网易云，再用桌面上的「网易云音乐(带热键)」打开。`);
+    throw new Error(`无法连接网易云本地调试端口 ${port}。请从托盘完全退出网易云，再点本工具的“启动网易云”；系统限制端口时，工具会自动选择其他端口。`);
   }
   assertActive();
   const opened = await connect(port);

@@ -243,6 +243,20 @@ class WorkerRegressionTests
                 "Unrelated executable must not use Store activation");
             Check(CloudMusicStore.GetAppIdForExecutable(node) == null, "Ordinary executable must not use Store activation");
             Check(CloudMusicStore.GetAppIdForExecutable(null) == null, "Missing executable must be supported");
+            Check(DebugPortPolicy.Select(9229, delegate(int p) { return DebugPortState.Available; }) == 9229,
+                "An available configured debug port must remain unchanged");
+            Check(DebugPortPolicy.Select(9229, delegate(int p) { return DebugPortState.InUse; }) == 9229,
+                "An already-listening configured debug port must remain unchanged");
+            Check(DebugPortPolicy.Select(9229, delegate(int p) { return p == 9229 ? DebugPortState.Blocked : DebugPortState.Available; }) == 19229,
+                "A Windows-reserved debug port must select an available fallback");
+            Check(DebugPortPolicy.Select(9229, delegate(int p) { return p == 9229 ? DebugPortState.Blocked : p == 19229 ? DebugPortState.InUse : DebugPortState.Available; }) == 29229,
+                "Fallback selection must not reuse another listener's port");
+            Check(DebugPortPolicy.Select(70000, delegate(int p) { return DebugPortState.Available; }) == 19229,
+                "Invalid configured ports must choose a valid fallback");
+            bool allPortsBlocked = false;
+            try { DebugPortPolicy.Select(9229, delegate(int p) { return DebugPortState.Blocked; }); }
+            catch (InvalidOperationException) { allPortsBlocked = true; }
+            Check(allPortsBlocked, "All blocked ports must report a clear failure");
             if (args.Length > 2)
             {
                 using (PlayWorker worker = new PlayWorker())
