@@ -39,6 +39,11 @@ public static class GameEventTests
     }
     static T Field<T>(object value, string name) { return (T)value.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(value); }
     static void Click(IButtonControl button) { typeof(Button).GetMethod("OnClick", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(button, new object[] { EventArgs.Empty }); }
+    static Button FindButton(Control parent, string text)
+    {
+        foreach (Control control in parent.Controls) if (control is Button && control.Text == text) return (Button)control;
+        throw new Exception("missing button " + text);
+    }
     [STAThread] public static int Main(string[] args)
     {
         try {
@@ -52,6 +57,28 @@ public static class GameEventTests
             Check(roundtrip.gameEventsEnabled && roundtrip.gameEvents[0].playerSlots == 3 && roundtrip.gameEvents[0].note.Contains("雨爱"), "rules roundtrip");
             GameEventRule p1 = Rule(1, .4), p2 = Rule(2, .4), both = Rule(3, .4);
             Check(GameEventCatalog.Validate(both) == null, "both slots valid");
+            Check(GameEventCatalog.SongSummary(both) == "雨爱 (DJ版) / DYYL." && GameEventCatalog.StartSummary(both) == "从头播放", "one track summary unchanged");
+            GameEventRule multi = Rule(1, .4);
+            multi.SetTracks(new GameEventTrack[] {
+                new GameEventTrack { songId = "3362244118", seconds = 0, note = "雨爱 (DJ版) / DYYL." },
+                new GameEventTrack { songId = "316100", seconds = 12.5, note = "另一首" }
+            });
+            Check(GameEventCatalog.Validate(multi) == null, "multiple tracks valid");
+            Check(GameEventCatalog.SongSummary(multi).Contains("随机") && GameEventCatalog.StartSummary(multi) == "不同", "multiple tracks summarize as a random pool");
+            AppConfig multiConfig = json.Deserialize<AppConfig>(json.Serialize(old));
+            multiConfig.gameEvents.Clear(); multiConfig.gameEvents.Add(multi);
+            AppConfig multiRound = json.Deserialize<AppConfig>(json.Serialize(multiConfig));
+            Check(multiRound.gameEvents[0].Tracks().Count == 2 && multiRound.gameEvents[0].Tracks()[1].songId == "316100" && multiRound.gameEvents[0].Tracks()[1].seconds == 12.5, "multiple tracks roundtrip");
+            AppConfig legacySongs = json.Deserialize<AppConfig>("{\"port\":9229,\"gameEvents\":[{\"id\":\"legacy1\",\"enabled\":true,\"game\":\"ggst\",\"eventId\":\"ky.dragon-install\",\"playerSlots\":1,\"songId\":\"3362244118\",\"seconds\":8,\"delaySeconds\":0.4,\"note\":\"雨爱\"}]}");
+            Check(legacySongs.gameEvents[0].Tracks().Count == 1 && legacySongs.gameEvents[0].Tracks()[0].seconds == 8 && legacySongs.gameEvents[0].Pick(new Random(0)).songId == "3362244118", "legacy single song stays one choice");
+            Random picker = new Random(1); HashSet<string> picked = new HashSet<string>();
+            for (int i = 0; i < 40; i++) picked.Add(multi.Pick(picker).songId);
+            Check(picked.Count == 2 && picked.Contains("3362244118") && picked.Contains("316100"), "event picks among selected tracks");
+            GameEventRule brokenTrack = Rule(1, .4);
+            brokenTrack.SetTracks(new GameEventTrack[] { new GameEventTrack { songId = "12ab" } });
+            Check(GameEventCatalog.Validate(brokenTrack) != null, "non-numeric track invalid");
+            brokenTrack.SetTracks(new GameEventTrack[0]);
+            Check(GameEventCatalog.Validate(brokenTrack) != null, "clearing tracks invalid");
             Check(GameEventCatalog.Conflict(p2, new GameEventRule[] { p1 }) == null, "distinct slots can use distinct songs");
             Check(GameEventCatalog.Conflict(both, new GameEventRule[] { p1 }) != null, "overlap cannot race songs");
             GameEventRule invalid = Rule(0, 0);
@@ -80,6 +107,10 @@ public static class GameEventTests
             both.enabled = true;router.SetRules(new GameEventRule[] { both });router.Process(Batch("a", 0), 0);both.songId = "316100";
             Check(router.Process(Batch("a"), 1)[0].songId == "3362244118", "pending has immutable snapshot");
             both.songId = "3362244118";
+            router.SetRules(new GameEventRule[] { multi }); router.Process(Batch("pool", 0), 0);
+            multi.songs[0].songId = "999";
+            Check(router.Process(Batch("pool"), 1)[0].Tracks()[0].songId == "3362244118", "pending keeps its own track list");
+            multi.songs[0].songId = "3362244118";
             router.SetRules(new GameEventRule[] { p1, p2 });router.Process(Batch("a", 0, 1), 0);
             Check(router.Process(Batch("a"), 1).Count == 2, "distinct rules for both sides route independently");
             DragonEntryGate gate = new DragonEntryGate();gate.Observe(1, "CmnActStand", "kyk000", 0, true, 0);
@@ -117,6 +148,32 @@ public static class GameEventTests
                 Check(Field<CheckBox>(dialog, "p1").Checked && Field<CheckBox>(dialog, "p2").Checked, "both UI boxes loaded");
                 Click(dialog.AcceptButton);Check(dialog.Result.playerSlots == 3, "both UI boxes saved");
             }
+            using (GameEventRuleDialog dialog = new GameEventRuleDialog(multi, old.hotkeys, null, 9229)) {
+                Click(dialog.AcceptButton);
+                Check(dialog.Result.Tracks().Count == 2 && dialog.Result.Tracks()[1].seconds == 12.5 && dialog.Result.songId == "3362244118", "dialog saves every selected track");
+            }
+            HotkeyBinding previewed = null;
+            using (GameEventsDialog dialog = new GameEventsDialog(true, new GameEventRule[] { both }, old.hotkeys, null, 9229, delegate(HotkeyBinding song) { previewed = song; })) {
+                ShowOffscreen(dialog);
+                Field<ListView>(dialog, "list").Items[0].Selected = true;
+                Click(FindButton(dialog, "试一下"));
+                Check(previewed != null && previewed.songId == both.songId && previewed.seconds == both.seconds, "rule preview plays the selected rule now");
+            }
+            HashSet<string> previews = new HashSet<string>();
+            using (GameEventsDialog dialog = new GameEventsDialog(true, new GameEventRule[] { multi }, old.hotkeys, null, 9229, delegate(HotkeyBinding song) { previews.Add(song.songId); })) {
+                ShowOffscreen(dialog);
+                Field<ListView>(dialog, "list").Items[0].Selected = true;
+                Button tryRule = FindButton(dialog, "试一下");
+                for (int i = 0; i < 40; i++) Click(tryRule);
+                Check(previews.Count == 2, "rule preview draws from the whole pool");
+            }
+            previewed = null;
+            using (GameEventRuleDialog dialog = new GameEventRuleDialog(multi, old.hotkeys, null, 9229, delegate(HotkeyBinding song) { previewed = song; })) {
+                ShowOffscreen(dialog);
+                Field<ListView>(dialog, "songsView").Items[0].Selected = true;
+                Click(FindButton(dialog, "试一下"));
+                Check(previewed != null && previewed.songId == "3362244118" && previewed.seconds == 0, "editor preview plays the selected track");
+            }
             using (BindingDialog dialog = new BindingDialog(both.Song(), null, 9229, true)) {
                 Check(!dialog.Controls.Contains(Field<TextBox>(dialog, "hotkeyBox")), "song picker does not ask for a key");
                 Click(dialog.AcceptButton);Check(dialog.Result.songId == both.songId, "song picker saves without a key");
@@ -132,6 +189,11 @@ public static class GameEventTests
             }
             Console.WriteLine("Passed " + checks + " game-event checks (routing, both sides, config, lifecycle and forms)."); return 0;
         } catch (Exception e) { Console.Error.WriteLine(e); return 1; }
+    }
+    static void ShowOffscreen(Form form)
+    {
+        form.ShowInTaskbar = false; form.StartPosition = FormStartPosition.Manual; form.Location = new Point(-30000, -30000);
+        form.Show(); Application.DoEvents();
     }
     static void Render(Form form, string path)
     {

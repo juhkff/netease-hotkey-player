@@ -39,7 +39,7 @@ async function withClient(options, run) {
             value = visible ? 'clicked' : 'not-found';
             if (visible) { calls.clicks++; state = { songId: '316100', duration: 260, seconds: 0.3, playing: true }; }
           } else if (expression.includes('const e = document.querySelector')) value = query;
-          else if (expression.includes('ncm:song-tab')) {
+          else if (expression.includes('ncm:overview-tab')) {
             if (songTab) value = true;
             else { calls.tabClicks++; songTab = true; value = false; }
           }

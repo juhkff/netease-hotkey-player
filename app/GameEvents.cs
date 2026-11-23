@@ -6,6 +6,21 @@ using System.Threading;
 
 namespace NcmHotkey
 {
+    public sealed class GameEventTrack
+    {
+        public string songId { get; set; }
+        public double seconds { get; set; }
+        public string note { get; set; }
+        public GameEventTrack() { songId = ""; note = ""; }
+        public GameEventTrack Clone() { return new GameEventTrack { songId = songId, seconds = seconds, note = note ?? "" }; }
+        public HotkeyBinding ToBinding() { return new HotkeyBinding { songId = songId ?? "", seconds = seconds, note = note ?? "" }; }
+        public static GameEventTrack FromBinding(HotkeyBinding binding)
+        {
+            if (binding == null) return new GameEventTrack();
+            return new GameEventTrack { songId = binding.songId ?? "", seconds = binding.seconds, note = binding.note ?? "" };
+        }
+    }
+
     public sealed class GameEventRule
     {
         public string id { get; set; }
@@ -18,13 +33,57 @@ namespace NcmHotkey
         public double seconds { get; set; }
         public double delaySeconds { get; set; }
         public string note { get; set; }
+        // Empty means the legacy songId/seconds/note fields are the only track.
+        public List<GameEventTrack> songs { get; set; }
         public GameEventRule()
         {
             id = Guid.NewGuid().ToString("N"); enabled = true; game = "ggst";
             eventId = "ky.dragon-install"; playerSlots = 1; songId = ""; note = ""; delaySeconds = .4;
+            songs = new List<GameEventTrack>();
         }
-        public GameEventRule Clone() { return (GameEventRule)MemberwiseClone(); }
-        public HotkeyBinding Song() { return new HotkeyBinding { songId = songId, seconds = seconds, note = note ?? "" }; }
+        public List<GameEventTrack> Tracks()
+        {
+            List<GameEventTrack> list = new List<GameEventTrack>();
+            if (songs != null && songs.Count > 0) {
+                foreach (GameEventTrack track in songs) if (track != null) list.Add(track.Clone());
+                return list;
+            }
+            if (!string.IsNullOrEmpty(songId))
+                list.Add(new GameEventTrack { songId = songId, seconds = seconds, note = note ?? "" });
+            return list;
+        }
+        public void SetTracks(IEnumerable<GameEventTrack> values)
+        {
+            List<GameEventTrack> copy = new List<GameEventTrack>();
+            if (values != null) foreach (GameEventTrack track in values) if (track != null) copy.Add(track.Clone());
+            songs = copy;
+            if (copy.Count > 0) {
+                songId = copy[0].songId ?? "";
+                seconds = copy[0].seconds;
+                note = copy[0].note ?? "";
+            } else {
+                songId = "";
+                seconds = 0;
+                note = "";
+            }
+        }
+        public GameEventRule Clone()
+        {
+            GameEventRule copy = (GameEventRule)MemberwiseClone();
+            copy.SetTracks(Tracks());
+            return copy;
+        }
+        public HotkeyBinding Song()
+        {
+            List<GameEventTrack> list = Tracks();
+            return list.Count == 0 ? new HotkeyBinding() : list[0].ToBinding();
+        }
+        public HotkeyBinding Pick(Random random)
+        {
+            List<GameEventTrack> list = Tracks();
+            if (list.Count == 0) return new HotkeyBinding();
+            return list[random.Next(list.Count)].ToBinding();
+        }
     }
 
     public static class GameEventCatalog
@@ -37,11 +96,41 @@ namespace NcmHotkey
             if (rule == null || string.IsNullOrWhiteSpace(rule.id)) return "规则编号无效";
             if (rule.game != "ggst" || rule.eventId != "ky.dragon-install") return "此版本尚不支持该游戏事件";
             if (rule.playerSlots < 1 || rule.playerSlots > 3) return "请至少勾选 1P 或 2P";
-            if (string.IsNullOrEmpty(rule.songId)) return "请选择歌曲";
-            foreach (char c in rule.songId) if (c < '0' || c > '9') return "歌曲 ID 应为数字";
-            if (double.IsNaN(rule.seconds) || double.IsInfinity(rule.seconds) || rule.seconds < 0 || rule.seconds > 86400) return "歌曲起点无效";
+            List<GameEventTrack> tracks = rule.Tracks();
+            if (tracks.Count == 0) return "请至少选择一首歌曲";
+            foreach (GameEventTrack track in tracks) {
+                string trackError = ValidateTrack(track);
+                if (trackError != null) return trackError;
+            }
             if (double.IsNaN(rule.delaySeconds) || double.IsInfinity(rule.delaySeconds) || rule.delaySeconds < 0 || rule.delaySeconds > 30) return "延迟应在 0～30 秒之间";
             return null;
+        }
+        public static string ValidateTrack(GameEventTrack track)
+        {
+            if (track == null || string.IsNullOrEmpty(track.songId)) return "请选择歌曲";
+            foreach (char c in track.songId) if (c < '0' || c > '9') return "歌曲 ID 应为数字";
+            if (double.IsNaN(track.seconds) || double.IsInfinity(track.seconds) || track.seconds < 0 || track.seconds > 86400) return "歌曲起点无效";
+            return null;
+        }
+        public static string TrackTitle(GameEventTrack track)
+        {
+            if (track == null || string.IsNullOrEmpty(track.songId)) return "未选择";
+            return string.IsNullOrEmpty(track.note) ? "ID " + track.songId : track.note;
+        }
+        public static string SongSummary(GameEventRule rule)
+        {
+            List<GameEventTrack> tracks = rule == null ? new List<GameEventTrack>() : rule.Tracks();
+            if (tracks.Count == 0) return "未选择";
+            string first = TrackTitle(tracks[0]);
+            if (tracks.Count == 1) return first;
+            return first + " 等 " + tracks.Count.ToString(CultureInfo.InvariantCulture) + " 首（随机）";
+        }
+        public static string StartSummary(GameEventRule rule)
+        {
+            List<GameEventTrack> tracks = rule == null ? new List<GameEventTrack>() : rule.Tracks();
+            if (tracks.Count == 0) return "";
+            for (int i = 1; i < tracks.Count; i++) if (tracks[i].seconds != tracks[0].seconds) return "不同";
+            return HotkeyApi.Humanize(tracks[0].seconds);
         }
         public static string Conflict(GameEventRule candidate, IEnumerable<GameEventRule> existing)
         {

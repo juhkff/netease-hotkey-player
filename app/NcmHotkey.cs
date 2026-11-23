@@ -22,8 +22,8 @@ using System.Windows.Forms;
 using System.Xml;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("1.0.8.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.0.8.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.9.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.9.0")]
 
 namespace NcmHotkey
 {
@@ -985,6 +985,7 @@ namespace NcmHotkey
         ToolStripMenuItem pauseItem = new ToolStripMenuItem();
         Timer pingTimer = new Timer();
         GameEventService gameEvents;
+        readonly Random gameEventRandom = new Random();
         string gameEventStatus = "游戏事件：未启用";
         GameEventsDialog gameEventsDialog;
         bool editingGameEvents;
@@ -1067,8 +1068,13 @@ namespace NcmHotkey
             gameEvents.PlayRequested += delegate(GameEventRule rule, long version) {
                 Ui(delegate {
                     if (exiting || editingGameEvents || paused || gameEvents == null || !gameEvents.IsCurrent(version)) return;
-                    Log("[游戏事件] 触发 " + rule.eventId + " / " + GameEventCatalog.Slots(rule.playerSlots) + " / " + rule.songId);
-                    PlaySong(rule.Song(), -1);
+                    HotkeyBinding song = rule.Pick(gameEventRandom);
+                    if (string.IsNullOrEmpty(song.songId)) return;
+                    int choices = rule.Tracks().Count;
+                    string label = song.note != null && song.note.Length > 0 ? song.note : song.songId;
+                    Log("[游戏事件] 触发 " + rule.eventId + " / " + GameEventCatalog.Slots(rule.playerSlots) + " / " + label +
+                        (choices > 1 ? "（" + choices + " 首中随机）" : ""));
+                    PlaySong(song, -1);
                 });
             };
             ConfigureGameEvents();
@@ -1402,7 +1408,15 @@ namespace NcmHotkey
             if (editingGameEvents) return;
             editingGameEvents = true;
             try {
-                using (GameEventsDialog dialog = new GameEventsDialog(config.gameEventsEnabled, config.gameEvents, config.hotkeys, worker, config.port)) {
+                using (GameEventsDialog dialog = new GameEventsDialog(config.gameEventsEnabled, config.gameEvents, config.hotkeys, worker, config.port, delegate(HotkeyBinding song) {
+                    if (restorePending || playPending) {
+                        MessageBox.Show("正在处理上一段播放或复位，请稍后再试。", "请稍等", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return;
+                    }
+                    string label = song.note != null && song.note.Length > 0 ? song.note : song.songId;
+                    Log("[游戏事件] 试听 " + label);
+                    PlaySong(song, -1);
+                })) {
                     gameEventsDialog = dialog;
                     dialog.UpdateMonitoringStatus(gameEventStatus);
                     ConfigureGameEvents();
